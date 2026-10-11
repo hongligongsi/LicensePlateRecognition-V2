@@ -94,6 +94,45 @@ def ensure_odd(value: int, minimum: int = 1) -> int:
     return value if value % 2 == 1 else value + 1
 
 
+def ensure_bgr(img: np.ndarray | None, min_side: int = 2) -> np.ndarray | None:
+    """把任意形态的输入图像归一化为**三通道 uint8 BGR**，不可用则返回 ``None``。
+
+    图像处理管线里的每个入口（版式测量、颜色判定、双层切分……）都可能
+    收到非常规输入：灰度图、带 alpha 的四通道图、float32/float64、
+    含 NaN 的数组、甚至 ``None``。这些输入直接喂给 OpenCV 会抛出五花八门
+    的异常。与其在每个函数里各自防护，不如在入口统一归一化：
+
+    * ``None`` / 维度异常 / 过小（单边 < ``min_side``）→ ``None``
+    * 灰度（2 维或第 3 维为 1）→ 转三通道
+    * 四通道（BGRA）→ 去 alpha
+    * 非整型像素（float 等）→ NaN/inf 置 0 后裁剪到 0~255 转 uint8
+    """
+    if img is None or not isinstance(img, np.ndarray) or img.ndim not in (2, 3):
+        return None
+    h, w = img.shape[:2]
+    if h < min_side or w < min_side:
+        return None
+
+    arr = img
+    if arr.ndim == 2:
+        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    elif arr.shape[2] == 1:
+        arr = cv2.cvtColor(arr[:, :, 0], cv2.COLOR_GRAY2BGR)
+    elif arr.shape[2] == 4:
+        arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+    elif arr.shape[2] != 3:
+        return None
+
+    if arr.dtype != np.uint8:
+        if np.issubdtype(arr.dtype, np.floating):
+            arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
+            arr = np.clip(arr, 0.0, 255.0)
+        else:
+            arr = np.clip(arr, 0, 255)
+        arr = arr.astype(np.uint8)
+    return arr
+
+
 def draw_result(img: np.ndarray, results: list[PlateResult]) -> np.ndarray:
     """在原图上画出所有识别到的车牌框和文字，返回新图。
 
@@ -188,6 +227,7 @@ __all__ = [
     "imwrite",
     "resize_max_side",
     "ensure_odd",
+    "ensure_bgr",
     "draw_result",
     "to_display_rgb",
     "ImageReadError",

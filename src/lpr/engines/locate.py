@@ -23,7 +23,7 @@ import numpy as np
 
 from ..config import LocateConfig
 from ..types import PlateColor
-from ..utils.image import ensure_odd, resize_max_side
+from ..utils.image import ensure_bgr, ensure_odd, resize_max_side
 
 
 @dataclass
@@ -76,6 +76,7 @@ def detect_hazmat(roi: np.ndarray, cfg: LocateConfig) -> bool:
 
     第 1 条排除了黄底黑字，第 2 条排除了黑底白字，两条合起来才是黑底黄字。
     """
+    roi = ensure_bgr(roi, min_side=4)
     if not cfg.detect_hazmat or roi is None or roi.size == 0:
         return False
 
@@ -98,43 +99,110 @@ def detect_hazmat(roi: np.ndarray, cfg: LocateConfig) -> bool:
     return yellow / max(1e-6, yellow + dark) >= cfg.hazmat_fg_share
 
 
+def _core_region(roi: np.ndarray, trim: float = 0.12) -> np.ndarray:
+    """取车牌的中心区域，去掉四周边缘。
+
+    定位框的外圈常混入车身颜色/阴影/相邻物体；中心区域才是稳定的底色。
+    裁剪比例不宜过大，否则字符（也占中间）会挤掉底色像素。
+    """
+    h, w = roi.shape[:2]
+    ty, tx = int(round(h * trim)), int(round(w * trim))
+    if h - 2 * ty < 8 or w - 2 * tx < 8:
+        return roi
+    return roi[ty : h - ty, tx : w - tx]
+
+
+def _color_ratios(roi: np.ndarray) -> dict[PlateColor, float]:
+    """统计各候选底色的像素占比。"""
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    total = roi.shape[0] * roi.shape[1]
+    if total == 0:
+        return {}
+    return {
+        color: cv2.countNonZero(_color_mask(hsv, color)) / total
+        for color in (
+            PlateColor.BLUE,
+            PlateColor.YELLOW,
+            PlateColor.GREEN,
+            PlateColor.WHITE,
+            PlateColor.BLACK,
+        )
+    }
+
+
 def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]:
     """判断车牌底色以及该颜色的像素占比。
 
     替代原版的双层 ``for i / for j`` + ``.item()`` 统计，改为 ``cv2.inRange``
     一次算完整个掩码，再用 ``countNonZero``。
+
+    ## v2.3 判定策略改进
+
+    原实现用「绝对占比 ≥ ``color_ratio``（0.5）」做门槛，实测**几乎判不出颜色**：
+    真实车牌上字符占了大量面积，底色占比通常只有 10%~30%，于是大量车牌被
+    判成 ``UNKNOWN``（9 张样张里 5 张）。参考实现 YOLO26-plate 用独立的颜色
+    分类网络头规避了这个问题，但我们要在纯 CV 下达到同等效果，改为：
+
+    1. **中心区域**统计（:func:`_core_region`）—— 去掉边缘的车身干扰；
+    2. **相对胜出**：不要求绝对占比过半，只要某种颜色**显著领先第二名**
+       （差值 ≥ ``color_margin``）就认定为该底色；
+    3. **自适应下限**：领先者占比还需超过 ``color_ratio`` 的一个小比例，
+       避免在"全是噪声、谁都不像"的区域硬判一个颜色；
+    4. 蓝/黄/绿都不像时，才退化为黑白判定。
     """
+    roi = ensure_bgr(roi, min_side=4)
     if roi is None or roi.size == 0:
         return PlateColor.UNKNOWN, 0.0
 
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    total = roi.shape[0] * roi.shape[1]
-    if total == 0:
+    core = _core_region(roi)
+    ratios = _color_ratios(core)
+    if not ratios:
         return PlateColor.UNKNOWN, 0.0
 
-    # 蓝、黄、绿是真正需要区分的车牌底色；白/黑作为兜底
-    scores: dict[PlateColor, float] = {}
-    for color in (PlateColor.BLUE, PlateColor.YELLOW, PlateColor.GREEN):
-        ratio = cv2.countNonZero(_color_mask(hsv, color)) / total
-        scores[color] = ratio
-
-    best_color, best_ratio = max(scores.items(), key=lambda kv: kv[1])
-
-    # 危险品牌优先判定：黄底黑字的普通黄牌会被下面那条拦截，
+    # 危险品牌优先判定：黄底黑字的普通黄牌会被后面拦截，
     # 但只有先做极性分析才能把"黑底黄字"从"黄底黑字"里摘出来
     if detect_hazmat(roi, cfg):
-        return PlateColor.HAZMAT, max(best_ratio, 0.5)
+        best = max(ratios.get(PlateColor.YELLOW, 0.0), ratios.get(PlateColor.BLACK, 0.0))
+        return PlateColor.HAZMAT, max(best, 0.5)
 
-    if best_ratio >= cfg.color_ratio * 0.5:
+    # ---- 蓝 / 黄 / 绿：相对胜出
+    chroma = {
+        c: ratios.get(c, 0.0)
+        for c in (PlateColor.BLUE, PlateColor.YELLOW, PlateColor.GREEN)
+    }
+    ranked = sorted(chroma.items(), key=lambda kv: -kv[1])
+    best_color, best_ratio = ranked[0]
+    runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+
+    white_ratio = ratios.get(PlateColor.WHITE, 0.0)
+    black_ratio = ratios.get(PlateColor.BLACK, 0.0)
+    mono_color, mono_ratio = (
+        (PlateColor.WHITE, white_ratio)
+        if white_ratio >= black_ratio
+        else (PlateColor.BLACK, black_ratio)
+    )
+
+    min_share = cfg.color_ratio * 0.25          # 自适应下限（原为 0.5，过严）
+
+    # 领先者必须"够多"且"领先够明显"
+    if best_ratio >= min_share and (best_ratio - runner_up) >= cfg.color_margin:
+        # 例外：黑白已占**绝对主导**时，彩色只是零星噪声。
+        # 典型场景是"黑底 + 少量黄色残点"，它语义上是黑牌（关掉危险品检测后
+        # 就该判黑），不该被零星黄色拉走。
+        if mono_ratio < 0.6 or best_ratio > mono_ratio * 0.35:
+            return best_color, best_ratio
+        return mono_color, mono_ratio
+
+    # ---- 退化为黑白判定（白牌/黑牌/临牌）
+    if mono_ratio >= min_share:
+        # 黑白与彩色相当接近时优先彩色（车牌底色本就是彩色的概率更高）
+        if best_ratio > mono_ratio * 0.6 and best_ratio >= min_share:
+            return best_color, best_ratio
+        return mono_color, mono_ratio
+
+    # 彩色有微弱信号但不够明确，且黑白也不像 → 给出彩色（避免 UNKNOWN 泛滥）
+    if best_ratio > 0:
         return best_color, best_ratio
-
-    # 蓝黄绿都不像时，退化为"黑白判定"
-    white_ratio = cv2.countNonZero(_color_mask(hsv, PlateColor.WHITE)) / total
-    black_ratio = cv2.countNonZero(_color_mask(hsv, PlateColor.BLACK)) / total
-    if white_ratio >= cfg.color_ratio:
-        return PlateColor.WHITE, white_ratio
-    if black_ratio >= cfg.color_ratio:
-        return PlateColor.BLACK, black_ratio
 
     return PlateColor.UNKNOWN, best_ratio
 

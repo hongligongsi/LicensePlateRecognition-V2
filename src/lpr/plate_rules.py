@@ -53,6 +53,59 @@ CONFUSION_MAP: dict[str, str] = {
     "L": "1",
 }
 
+#: 省份简称的**形近字** → 正确省份。
+#:
+#: 这些字都不在省份集内，一旦 OCR 认错，整条号码就会被判为无效而丢弃。
+#: 把字形/字音相近的常见错误收敛回来，是零成本提升召回的手段。
+#:
+#: 收录原则：只收**不会与其它省份简称混淆**的形近字。例如
+#: ``"淅"→"浙"`` 是安全的（"淅"本身不是简称），但
+#: ``"南"→"赣"`` 就不该收（"南"可能出现在非车牌文本里，容易误伤）。
+PROVINCE_LOOKALIKES: dict[str, str] = {
+    # 京
+    "凉": "京", "享": "京", "亭": "京", "高": "京",
+    # 沪
+    "炉": "沪", "户": "沪", "护": "沪", "泸": "沪",
+    # 津
+    "律": "津", "建": "津", "津": "津",
+    # 渝
+    "愉": "渝", "瑜": "渝", "榆": "渝",
+    # 冀 / 粤 / 鲁 / 豫
+    "翼": "冀", "異": "冀",
+    "奥": "粤", "粵": "粤", "専": "粤",
+    "噜": "鲁", "兽": "鲁", "曾": "鲁",
+    "预": "豫", "予": "豫", "務": "豫",
+    # 浙 / 苏 / 皖 / 闽
+    "浙": "浙", "淅": "浙", "折": "浙",
+    "辦": "苏", "酥": "苏", "苏": "苏",
+    "皖": "皖", "腕": "皖", "碗": "皖",
+    "闻": "闽", "闵": "闽", "闩": "闽",
+    # 赣 / 湘 / 鄂 / 桂
+    "干": "赣", "赣": "赣", "贛": "赣",
+    "相": "湘", "箱": "湘", "想": "湘",
+    "卾": "鄂", "愕": "鄂", "鳄": "鄂",
+    "挂": "桂", "贵": "桂", "柱": "桂",
+    # 川 / 贵 / 云 / 藏
+    "州": "川", "洲": "川", "川": "川",
+    "潰": "贵", "桂": "贵", "遗": "贵",
+    "雲": "云", "运": "云", "雲": "云",
+    "藏": "藏", "臟": "藏", "藏": "藏",
+    # 陕 / 甘 / 青 / 宁
+    "陕": "陕", "狭": "陕", "峡": "陕",
+    "甘": "甘", "廿": "甘", "泔": "甘",
+    "清": "青", "精": "青", "情": "青",
+    "宁": "宁", "宇": "宁", "甯": "宁",
+    # 新 / 蒙 / 辽 / 吉
+    "薪": "新", "亲": "新", "新": "新",
+    "蒙": "蒙", "檬": "蒙", "艨": "蒙",
+    "辽": "辽", "疗": "辽", "辽": "辽",
+    "告": "吉", "洁": "吉", "结": "吉",
+    # 黑 / 沈 / 济
+    "墨": "黑", "嘿": "黑", "熏": "黑",
+    "沉": "沈", "枕": "沈", "忱": "沈",
+    "剂": "济", "挤": "济", "齐": "济",
+}
+
 
 @dataclass
 class PlateFormat:
@@ -98,11 +151,13 @@ FORMATS: list[PlateFormat] = [
     PlateFormat("警用", re.compile(rf"[{PROV}][{L}][{D}]{{4,5}}警$"), 7, 8),
     # 军队（字头 + 字母 + 5 位数字/字母）
     PlateFormat("军队", re.compile(rf"[{''.join(MILITARY_HEADS)}][{L}][{D}]{{5}}$"), 7, 7),
-    # 旧式军牌（省 + V/K 等军用字母 + 5 位数字），必须早于普通民用判定，
-    # 否则 京V12345 会被误归为普通民用
+    # 旧式军牌（京V + 5 位数字），必须早于普通民用判定，
+    # 否则 京V12345 会被误归为普通民用。
+    # 只保留无歧义的"京V"：其它省份 + V/K 等字母的组合几乎都是民用车牌
+    # （如 皖K = 六安、粤V = 揭阳），放宽会大面积误判。
     PlateFormat(
         "军队",
-        re.compile(rf"[{PROV}][{''.join(LEGACY_MILITARY_LETTERS)}][{D}]{{5}}$"),
+        re.compile(rf"京V[{D}]{{5}}$"),
         7,
         7,
     ),
@@ -146,8 +201,63 @@ def identify_format(text: str) -> PlateFormat | None:
     return None
 
 
+#: 宽松召回用的结构正则（**只校验整体骨架，不约束具体位**）。
+#:
+#: 借鉴参考实现 YOLO26-plate 的分层思路：它的 ``_NEW_ENERGY_LOOSE``
+#: 明确注明"仅校验整体结构，不再强约束特定位字母"。原因是——
+#: OCR 输出常有字母/数字混淆（``D``↔``0``、``B``↔``8``），若在**召回阶段**
+#: 就套用严格规则，一个字符错位就会让整条号码被丢弃，等于白识别。
+#:
+#: 因此分成两层：
+#:
+#: * **召回层**（本正则）：只看「1 位汉字 + 1 位字母 + 3~7 位字母数字 + 可选中文后缀」，
+#:   尽可能把候选捞出来；
+#: * **校验层**（:data:`FORMATS`）：严格判定类型与合法性，用于打分与展示。
+#:
+#: 两层之间的差额由 :func:`correct` 尝试补齐（纠错后再走严格校验）。
+#:
+#: 注意首位用 ``[\u4e00-\u9fff]`` 而非省份集：因为省份形近字（凉/泸/律…）
+#: 也要能在召回阶段被捞出来，否则形近字纠错根本没有机会执行。
+LOOSE_HEAD_CLASS = rf"[{PROV}{''.join(PROVINCE_LOOKALIKES)}]"
+
+LOOSE_STRUCTURE = re.compile(
+    # 普通民用 / 新能源 / 各类后缀牌：汉字 + 字母 + 3~7 位字母数字 + 可选后缀
+    rf"{LOOSE_HEAD_CLASS}[{L}][{AN}]{{3,7}}[警挂学危港澳使领]?"
+    # 军队：汉字字头 + 字母 + 3~7 位
+    rf"|[军空海北沈兰济南广成使][{L}][{AN}]{{3,7}}[警挂学危]?"
+    # 旧式军牌：省份 + 军用字母 + 5 位数字
+    rf"|[{PROV}][{''.join(sorted(LEGACY_MILITARY_LETTERS))}][{D}]{{5}}"
+    # 武警：WJ + 省份 + 4 位 + 可选 1 位
+    rf"|WJ[{PROV}][{D}]{{4}}[{AN}]?"
+    # 使领馆：纯数字 + 使，或 省份/使 开头
+    rf"|使[{D}]{{4,6}}|[{PROV}][{D}]{{3}}[使领]"
+    # 民航：民航 + 管理局字母 + 3~5 位数字
+    rf"|民航[{CIVIL_AVIATION_HEADS}][{D}]{{3,5}}"
+)
+
+
+def loose_match(text: str, start: int = 0) -> str | None:
+    """从文本中**宽松**抽取一段可能的车牌号（召回用）。
+
+    只要求骨架正确，不要求逐位合法。这样即便 OCR 把 ``D`` 认成 ``0``，
+    也不会在抽取阶段就丢掉整条号码 —— 留给 :func:`correct` 去修。
+
+    Args:
+        text: 已清洗（去分隔符、转大写）的文本。
+        start: 从此位置开始搜索。默认 0；传 ``1`` 可跳过首位再找
+            （用于"整段不是车牌，但后半段是"的场景）。
+
+    Returns:
+        匹配到的子串，或 ``None``。
+    """
+    if not text:
+        return None
+    m = LOOSE_STRUCTURE.search(text, start)
+    return m.group(0) if m else None
+
+
 def is_valid(text: str) -> bool:
-    """号码是否符合任一种合法车牌格式。"""
+    """号码是否符合任一种合法车牌格式（**严格校验层**）。"""
     return identify_format(text) is not None
 
 
@@ -181,11 +291,21 @@ def correct(text: str) -> tuple[str, list[str]]:
 
     chars = list(text)
 
+    # ---- 规则 0：省份形近字纠正（OCR 最常见的一类错误）
+    # "京"被认成"凉"/"享"、"沪"被认成"炉"、"津"被认成"律"…
+    # 这些字在字符集之外，若不纠正则整条号码直接判无效、白白丢掉。
+    # 注意：只在**首位且不在省份集**时才尝试，避免改坏本来正确的号码。
+    if chars and chars[0] not in PROVINCE_CHARS:
+        fixed_prov = PROVINCE_LOOKALIKES.get(chars[0])
+        if fixed_prov is not None:
+            changes.append(f"首位 {chars[0]!r} → {fixed_prov!r}（形近省份简称）")
+            chars[0] = fixed_prov
+
     # ---- 规则 1：首位必须是省份简称
     if chars[0] not in PROVINCE_CHARS:
         # 特例：军队字头、"使"字头、武警 WJ
-        if chars[0] in MILITARY_HEADS or chars[0] in ("使", "W"):
-            return text, changes
+        if chars[0] in MILITARY_HEADS or chars[0] in ("使", "W") or chars[0] == "民":
+            return "".join(chars), changes
         # 旧式军牌字母字头（如 V12345）会被误判，此处不做纠正
         changes.append(f"首位 {chars[0]!r} 不是省份简称")
         return text, changes
@@ -276,6 +396,9 @@ def _best_letter(ch: str) -> str:
         "6": "G", "7": "T", "8": "B", "9": "P",
         # 字母 I/O 本身不合法（与数字混淆），映射到字形相近的合法字母
         "I": "J", "O": "D",
+        # 中文 OCR 把字母 E 误读成汉字"三"非常常见（字形几乎相同），
+        # 双层黄牌上牌（省份行）首当其冲，如 京E → 京三
+        "三": "E",
     }
     if ch in ISSUER_LETTERS:
         return ch
@@ -359,13 +482,17 @@ DEFAULT_LAYOUT: dict[str, str] = {
 
 __all__ = [
     "PROVINCE_CHARS",
+    "PROVINCE_LOOKALIKES",
     "SEQ_LETTERS",
     "ISSUER_LETTERS",
     "CIVIL_AVIATION_HEADS",
+    "CONFUSION_MAP",
     "FORMATS",
     "DEFAULT_LAYOUT",
+    "LOOSE_STRUCTURE",
     "PlateFormat",
     "identify_format",
+    "loose_match",
     "is_valid",
     "correct",
     "plate_score",

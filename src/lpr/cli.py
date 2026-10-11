@@ -46,13 +46,13 @@ from .utils.security import (
 )
 
 PROG = "lpr"
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 
 
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
-        description="中国车牌识别 v2.2 —— 双引擎 + 定位引导加速 + 全类型车牌支持",
+        description="中国车牌识别 v2.3 —— 双引擎 + 定位引导加速 + 全类型车牌支持",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

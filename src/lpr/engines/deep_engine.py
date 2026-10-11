@@ -45,9 +45,9 @@ import cv2
 import numpy as np
 
 from ..config import EngineConfig
-from ..plate_rules import correct, plate_score
+from ..plate_rules import correct, is_valid, loose_match, plate_score
 from ..types import PlateColor, PlateLayout, PlateResult
-from ..utils.image import imread, resize_max_side
+from ..utils.image import ensure_bgr, imread, resize_max_side
 from ..utils.logging_setup import get_logger
 from ..utils.security import Limits, check_image
 from .base import BaseEngine, EngineUnavailable
@@ -55,11 +55,14 @@ from .locate import detect_color, locate_plates, refine_by_color
 
 logger = get_logger("engines.deep")
 
-#: 车牌号码正则（用于从 OCR 文本中抽取号码）
+#: 车牌号码正则（用于从 OCR 文本中抽取号码）—— **严格层**
 #: 末位的中文标识（警/挂/学/危/港/澳/使/领）必须允许，否则危险品运输牌
 #: ``京A1234危``、警牌 ``京A1234警`` 这类号码会被截断成非法长度。
 #: 民航号牌以"民航"两字开头（如 民航A0001），既不是省份简称也不是军队
 #: 字头，必须单独开一个分支，否则 OCR 抽不出这段文本。
+#:
+#: 与 ``plate_rules.LOOSE_STRUCTURE`` 的分工：本正则**首选**使用（更精确，
+#: 能直接筛掉非车牌文本）；抽不到时再退到宽松召回（允许首位形近字）。
 _PLATE_TEXT = re.compile(
     r"[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新]"
     r"[A-Z][A-Z0-9]{3,6}[警挂学危港澳]?"
@@ -95,6 +98,103 @@ _SINGLE_BAND_RATIO = 0.50
 #: 双行牌两行行带的高度相似度下限（min/max）。
 #: 真实双行牌上下行字号一致；上薄下厚多半是单行牌上方的装饰条。
 _BAND_HEIGHT_SIMILARITY = 0.55
+
+
+def _extract_plate(cleaned: str) -> str | None:
+    """从清洗后的 OCR 文本里抽出一段车牌号。
+
+    三级策略（借鉴参考实现 YOLO26-plate 的"宽松召回 / 严格校验"分层）：
+
+    四级策略（借鉴参考实现 YOLO26-plate 的"宽松召回 / 严格校验"分层）：
+
+    1. **严格召回**：用 :data:`_PLATE_TEXT` 找结构合法的片段（首选）。
+       它要求首位是真实省份简称，能直接筛掉大量非车牌文本。
+    2. **宽松召回**：用 :func:`loose_match` —— 允许首位是**省份形近字**
+       （凉/泸/律…），把"结构对但首位认错"的号码也捞出来。
+       此前这类号码会在抽取阶段就被丢弃，纠错逻辑根本没机会执行。
+    3. **先纠正再召回**：把整串先跑一遍 :func:`correct`（如把 ``京三`` 的
+       "三"修成字母 E），再走一次宽松召回 —— 专救"中间位被读成汉字"的情况。
+    4. **纯字母数字兜底**：整串都是 ``[A-Z0-9]`` 时（首位省份被完全读丢，
+       如 ``A12345``），仅当**纠正后能变成合法车牌**才接受。
+
+    第 4 步的附加条件很关键：此前只判 ``_BARE_TEXT`` 就接受，导致全图 OCR
+    把车身贴纸、广告字（``JINCBFI``、``A5331``）也当成车牌报出来。
+    加一道"纠正后必须合法"的闸门后，这类噪声会被自然滤掉。
+    """
+    if not cleaned:
+        return None
+
+    match = _PLATE_TEXT.search(cleaned)
+    if match:
+        return match.group(0)
+
+    loose = loose_match(cleaned)
+    if loose:
+        return loose
+
+    # 先纠正再召回：修掉形如"京三A5331"（三→E）这类汉字误读后再试
+    corrected, _changes = correct(cleaned)
+    if corrected != cleaned:
+        match = _PLATE_TEXT.search(corrected)
+        if match:
+            return match.group(0)
+        loose = loose_match(corrected)
+        if loose:
+            return loose
+
+    # 整串不是车牌，但后半段可能是（前面粘了无关文字/汉字）
+    if len(cleaned) > 2:
+        loose = loose_match(cleaned, start=1)
+        if loose:
+            return loose
+
+    # 纯字母数字兜底：必须"纠正后合法"才接受，否则视为噪声
+    if _BARE_TEXT.match(cleaned) and is_valid(correct(cleaned)[0]):
+        return cleaned
+
+    return None
+
+
+def _accumulate_char_probs(
+    store: dict[str, list[float]], text: str, probs: list[float]
+) -> None:
+    """把一次识别的逐字符置信度并入累积表（逐位取最大值）。"""
+    if not text or not probs:
+        return
+    existing = store.get(text)
+    if existing is None or len(existing) != len(probs):
+        store[text] = list(probs)
+        return
+    store[text] = [max(a, b) for a, b in zip(existing, probs)]
+
+
+def _align_char_probs(
+    probs: list[float] | None,
+    observed: str,
+    final: str,
+    fallback: float,
+) -> list[float]:
+    """把观测串的逐位置信度对齐到最终号码上。
+
+    纠错可能改变字符（``凉→京``）或长度，对不上时按位置沿用或退化为
+    整体置信度 —— 只保证长度与 ``final`` 一致，不臆造精度。
+    """
+    if not final:
+        return []
+    if not probs:
+        return [fallback] * len(final)
+    if len(probs) == len(final):
+        return list(probs)
+    if len(probs) == len(observed) and len(observed) == len(final):
+        return list(probs)
+    # 长度变了：保留共同前缀的逐位值，其余用整体置信度填充
+    n = min(len(probs), len(final))
+    return list(probs[:n]) + [fallback] * (len(final) - n)
+
+
+def _weak_positions(probs: list[float], threshold: float = 0.7) -> list[int]:
+    """返回置信度低于阈值的字符下标（0-based），供人工复核定位。"""
+    return [i for i, p in enumerate(probs) if p < threshold]
 
 
 def _probe_rapidocr() -> tuple[bool, str]:
@@ -243,9 +343,10 @@ def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     Returns:
         ``(上行, 下行)`` 图块，或 ``None``（不是双层牌）。
     """
-    h, w = roi.shape[:2]
-    if h < 12 or w < 12:
+    roi = ensure_bgr(roi, min_side=12)
+    if roi is None:
         return None
+    h, w = roi.shape[:2]
 
     # 宽高比过大 → 不可能是双行牌（双行牌高度约为宽度的一半）
     if w / max(1, h) > _DOUBLE_MAX_ASPECT:
@@ -287,20 +388,65 @@ def measure_layout(roi: np.ndarray, cfg: EngineConfig | None = None) -> str:
     if roi is None or roi.size == 0:
         return "unknown"
 
+    roi = ensure_bgr(roi, min_side=8)
+    if roi is None:
+        return "unknown"
+
     h, w = roi.shape[:2]
     if h < 8 or w < 8:
         return "unknown"
 
+    # ---- 证据 1（主导）：行分割
+    # 它能直接切出两条高度相近、上下分离的行带 —— 这是双行牌最硬的证据。
     if split_double_line(roi) is not None:
         return "double"
 
+    # 行分割"明确否定"：出现了内容过高（超过 50%）的单条行带。
+    # 那事实上就是一行字符，比宽高比先验可靠得多，直接判单行。
+    if _has_single_band(roi):
+        return "single"
+
+    # ---- 证据 2（辅助）：宽高比先验
+    # 单行牌 440x140mm（≈3.14:1），双行牌 440x220mm（≈2.0:1）。
+    # 仅在行分割拿不到结论时才用；且**只用于判单行**，不用于判双行 ——
+    # 因为"矮胖"也可能是误检到的车身/阴影区域，判成 double 会让它白跑
+    # 一遍双行拼接路径（实测 single_blue.jpg 的 602x277 车身区域曾被误判）。
     aspect = w / max(1, h)
-    # 双行牌的宽高比上限约 2.3；留一点余量到 2.6 再往上算单行
-    if aspect <= 2.35:
-        return "double"
     if aspect >= 2.6:
         return "single"
     return "unknown"
+
+
+def _has_single_band(roi: np.ndarray) -> bool:
+    """行投影里是否存在"内容过高、显然是一整行字符"的行带。
+
+    ``_find_bands`` 遇到这种行带会返回空列表（单行牌防线），
+    但"空列表"也可能是因为完全找不到行带（噪声图）。
+    这里显式区分两者：只有**先找到行带、又因过高被拒**才算明确否定。
+    """
+    roi = ensure_bgr(roi, min_side=12)
+    if roi is None:
+        return False
+    h, w = roi.shape[:2]
+    profile = _band_profile(roi)
+    if profile.size == 0 or profile.max() <= 0:
+        return False
+
+    active = profile > max(1, int(0.02 * w))
+    bands: list[tuple[int, int]] = []
+    start = None
+    for i, flag in enumerate(active):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            if i - start >= max(2, int(0.06 * h)):
+                bands.append((start, i))
+            start = None
+    if start is not None and len(active) - start >= max(2, int(0.06 * h)):
+        bands.append((start, len(active)))
+
+    # 存在占比 >50% 的行带 → 那就是一整行字符
+    return any((b[1] - b[0]) > h * _SINGLE_BAND_RATIO for b in bands)
 
 
 def _upscale(roi: np.ndarray, factor: float) -> np.ndarray:
@@ -498,24 +644,59 @@ class DeepEngine(BaseEngine):
           * 含检测：``RapidOCR(img)`` → 300~1600ms
           * 跳过检测：``text_recognizer([crop])`` → **8~55ms**
         """
+        return [(t, s) for t, s, _ in self._recognize_only_detailed(img)]
+
+    def _recognize_only_detailed(
+        self, img: np.ndarray
+    ) -> list[tuple[str, float, list[float]]]:
+        """同 :meth:`_recognize_only`，但额外返回**逐字符置信度**。
+
+        逐字符置信度是定位"哪个字认错了"的关键信息：整串 0.95 看着很好，
+        但可能是 ``京A1**45`` 里两位只有 0.3。参考实现 YOLO26-plate 的
+        ``get_plate_result`` 同样保留每字符概率（``prob[new_index]``），
+        我们也把这份信息带出来，用于：
+          * 输出审计（哪个位置不可信）
+          * 低置信字符触发的二次识别
+        """
         if not (self._rec_only_supported and self._recognizer is not None):
-            return [(t, s) for _, t, s in self._run_ocr(img)]
+            return [(t, s, [s] * len(t)) for _, t, s in self._run_ocr(img)]
 
         try:
             _, crops = self._ocr.get_boxes_img_without_det(img, img.shape[0], img.shape[1])
             results, _elapse = self._recognizer(crops)
         except Exception:
             logger.debug("纯识别路径异常，回退完整 OCR", exc_info=True)
-            return [(t, s) for _, t, s in self._run_ocr(img)]
+            return [(t, s, [s] * len(t)) for _, t, s in self._run_ocr(img)]
 
-        out: list[tuple[str, float]] = []
+        out: list[tuple[str, float, list[float]]] = []
         for item in results or []:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                text, score = item[0], item[1]
-                # 识别器对无效输入会返回置信度 1e-50 这类哨兵值
-                if text and float(score) > 1e-3:
-                    out.append((str(text), float(score)))
+            if not (isinstance(item, (list, tuple)) and len(item) >= 2):
+                continue
+            text, score = item[0], item[1]
+            # 识别器对无效输入会返回置信度 1e-50 这类哨兵值
+            if not text or float(score) <= 1e-3:
+                continue
+            char_probs = self._extract_char_probs(item, str(text), float(score))
+            out.append((str(text), float(score), char_probs))
         return out
+
+    @staticmethod
+    def _extract_char_probs(item: tuple, text: str, fallback: float) -> list[float]:
+        """从识别器输出里取出逐字符置信度，取不到就退化为整串分数。
+
+        RapidOCR 不同版本的第 3 个元素形态不一（可能是逐字概率列表，
+        也可能没有）。这里只做"有则用、无则退化"的稳健处理，不去猜结构。
+        """
+        if len(item) >= 3:
+            third = item[2]
+            if isinstance(third, (list, tuple, np.ndarray)) and len(third) == len(text):
+                try:
+                    probs = [float(v) for v in third]
+                    if all(0.0 <= p <= 1.0 for p in probs):
+                        return probs
+                except (TypeError, ValueError):
+                    pass
+        return [fallback] * len(text)
 
     def _recognize_candidates(
         self, candidates: list[tuple[np.ndarray, PlateColor, tuple]]
@@ -530,6 +711,8 @@ class DeepEngine(BaseEngine):
 
         for roi, color, bbox in candidates:
             votes: dict[str, float] = {}
+            #: 每个候选串累积的逐字符置信度（多轮识别取逐位最大值）
+            char_probs_by_text: dict[str, list[float]] = {}
             rounds = 0
             plan = [(up, sh) for up in _UPSCALE_STEPS for sh in _SHARPEN_LEVELS]
             # 双行牌展开形态。
@@ -545,19 +728,19 @@ class DeepEngine(BaseEngine):
                 for variant in variants:
                     prepared = _sharpen(_upscale(variant, up), sharp)
 
-                    for text, score in self._recognize_only(prepared):
+                    for text, score, char_probs in self._recognize_only_detailed(prepared):
                         cleaned = _clean_text(text)
-                        match = _PLATE_TEXT.search(cleaned)
-                        candidate = match.group(0) if match else None
-                        if not candidate and _BARE_TEXT.match(cleaned):
-                            candidate = cleaned
+                        candidate = _extract_plate(cleaned)
                         if not candidate:
                             continue
 
                         # 票重 = OCR 置信度 × 语法合法性
+                        # 合法候选额外加权：让"结构合法"的读数压过"结构不合法"的
                         votes[candidate] = votes.get(candidate, 0.0) + score * (
                             0.5 + plate_score(candidate)
                         )
+                        # 累积逐字符置信度（用于输出审计与低置信二次识别）
+                        _accumulate_char_probs(char_probs_by_text, candidate, char_probs)
 
                 if votes:
                     leader = max(votes, key=lambda k: votes[k])
@@ -585,6 +768,13 @@ class DeepEngine(BaseEngine):
 
             confidence = float(np.clip(0.5 * plate_score(corrected) + 0.4 * share + 0.1, 0, 1))
 
+            # 逐字符置信度：把投票时累积的值对齐到**纠正后**的号码上。
+            # 纠错可能改动了字符（如 凉→京），此时置信度按位置沿用原值，
+            # 便于定位"哪个位置不可信"。
+            char_confs = _align_char_probs(
+                char_probs_by_text.get(winner), winner, corrected, confidence
+            )
+
             results.append(
                 PlateResult(
                     text=corrected,
@@ -594,7 +784,7 @@ class DeepEngine(BaseEngine):
                     roi=roi,
                     confidence=confidence,
                     engine=self.name,
-                    char_confidences=[confidence] * len(corrected),
+                    char_confidences=char_confs,
                     meta={
                         "ocr_backend": self._impl,
                         "rounds": rounds,
@@ -603,6 +793,8 @@ class DeepEngine(BaseEngine):
                         "corrections": changes,
                         "aspect": round(roi.shape[1] / max(1, roi.shape[0]), 2),
                         "split_double": layout is PlateLayout.DOUBLE,
+                        # 最不可信的字符位置（0-based），便于人工复核与调参
+                        "weak_chars": _weak_positions(char_confs),
                     },
                 )
             )
@@ -623,11 +815,12 @@ class DeepEngine(BaseEngine):
 
         for idx, (quad, text, score) in enumerate(boxes):
             cleaned = _clean_text(text)
-            match = _PLATE_TEXT.search(cleaned)
-            if not match:
+            # 与候选路径同一套「严格优先 + 宽松兜底」抽取逻辑
+            raw = _extract_plate(cleaned)
+            if not raw:
                 continue
 
-            plate_text, changes = correct(match.group(0))
+            plate_text, changes = correct(raw)
             x0, y0 = quad[:, 0].min() / scale, quad[:, 1].min() / scale
             x1, y1 = quad[:, 0].max() / scale, quad[:, 1].max() / scale
             bbox = (int(x0), int(y0), int(x1 - x0), int(y1 - y0))
@@ -644,12 +837,24 @@ class DeepEngine(BaseEngine):
                     confidence=float(np.clip(0.6 * score + 0.4 * plate_score(plate_text), 0, 1)),
                     engine=self.name,
                     char_confidences=[score] * len(plate_text),
-                    meta={"ocr_backend": self._impl, "corrections": changes},
+                    meta={
+                        "ocr_backend": self._impl,
+                        "corrections": changes,
+                        "path": "full",
+                    },
                 )
             )
             used.add(idx)
 
         for group in self._group_fragments(boxes, used):
+            merged = self._merge_fragments(group, img, scale)
+            if merged is not None:
+                results.append(merged)
+            else:
+                used.discard(group[0][0])  # 归还，供垂直合并复用
+
+        # 双层牌垂直合并：上牌行 + 下牌行 在水平方向重叠、垂直方向相邻
+        for group in self._group_double_fragments(boxes, used):
             merged = self._merge_fragments(group, img, scale)
             if merged is not None:
                 results.append(merged)
@@ -714,15 +919,92 @@ class DeepEngine(BaseEngine):
             groups.append(current)
         return groups
 
+    def _group_double_fragments(
+        self, boxes: list[tuple], used: set[int]
+    ) -> list[list[tuple]]:
+        """识别**上下排布**的双层牌碎片：上行（省份+发牌机关）+ 下行（序号）。
+
+        与 :meth:`_group_fragments` 的同行水平拼接不同，双层牌的两个
+        碎片在**垂直方向相邻、水平方向重叠**，如::
+
+            京E      ← 上行（可能被误读成"京三"）
+           A5331     ← 下行
+
+        判定条件（从严，防止把车厢上不相关的两行文字拼起来）：
+          * 两碎片水平方向的重叠量 ≥ 较窄一方宽度的 40%
+          * 垂直间隙在 0.2~1.2 倍平均行高之间（紧贴但不分离）
+          * 两行高度相近（比值 0.5~2.0），符合真实双层牌版式
+          * 上下拼接后能被 :func:`_extract_plate` 抽出车牌，且纠正后合法
+        """
+        fragments = [
+            (i, quad, text, score)
+            for i, (quad, text, score) in enumerate(boxes)
+            if i not in used and len(_clean_text(text)) <= 6
+        ]
+        if len(fragments) < 2:
+            return []
+
+        groups: list[list[tuple]] = []
+        taken: set[int] = set()
+
+        for a in fragments:
+            if a[0] in taken:
+                continue
+            for b in fragments:
+                if b[0] in taken or b[0] == a[0]:
+                    continue
+                top, bot = (a, b) if a[1][:, 1].mean() <= b[1][:, 1].mean() else (b, a)
+                ta, tb = _clean_text(top[2]), _clean_text(bot[2])
+                if not ta or not tb:
+                    continue
+
+                th = top[1][:, 1].max() - top[1][:, 1].min()
+                bh = bot[1][:, 1].max() - bot[1][:, 1].min()
+                avg_h = max(1.0, (th + bh) / 2)
+                if not (0.5 <= th / max(1.0, bh) <= 2.0):
+                    continue
+
+                # 水平重叠量
+                lo = max(top[1][:, 0].min(), bot[1][:, 0].min())
+                hi = min(top[1][:, 0].max(), bot[1][:, 0].max())
+                overlap = hi - lo
+                narrow = min(
+                    top[1][:, 0].max() - top[1][:, 0].min(),
+                    bot[1][:, 0].max() - bot[1][:, 0].min(),
+                )
+                if overlap < narrow * 0.4:
+                    continue
+
+                # 垂直间隙
+                gap = bot[1][:, 1].min() - top[1][:, 1].max()
+                if not (-avg_h * 0.2 < gap < avg_h * 1.2):
+                    continue
+
+                text = ta + tb
+                raw = _extract_plate(text)
+                if not raw:
+                    continue
+                corrected, _ = correct(raw)
+                if not is_valid(corrected):
+                    continue
+
+                groups.append([top, bot])
+                taken.update((a[0], b[0]))
+                break
+
+        return groups
+
     def _merge_fragments(
         self, group: list[tuple], img: np.ndarray, scale: float
     ) -> PlateResult | None:
         """把同行分片拼成一个号码。"""
         text = "".join(_clean_text(f[2]) for f in group)
-        if not _BARE_TEXT.match(text) and not _PLATE_TEXT.search(text):
+        # 同样走两级抽取：严格优先，纯字母数字兜底
+        raw = _extract_plate(text)
+        if not raw and not _BARE_TEXT.match(text):
             return None
 
-        corrected, changes = correct(text)
+        corrected, changes = correct(raw or text)
         if len(corrected) < 5:
             return None
 
@@ -747,7 +1029,12 @@ class DeepEngine(BaseEngine):
             confidence=float(np.clip(0.5 * score + 0.5 * plate_score(corrected), 0, 1)),
             engine=self.name,
             char_confidences=[score] * len(corrected),
-            meta={"ocr_backend": self._impl, "fragments": len(group), "corrections": changes},
+            meta={
+                "ocr_backend": self._impl,
+                "fragments": len(group),
+                "corrections": changes,
+                "path": "fragments",
+            },
         )
 
 
@@ -788,4 +1075,11 @@ def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     return inter / union if union > 0 else 0.0
 
 
-__all__ = ["DeepEngine", "split_double_line", "measure_layout"]
+__all__ = [
+    "DeepEngine",
+    "split_double_line",
+    "measure_layout",
+    "_extract_plate",
+    "_align_char_probs",
+    "_weak_positions",
+]
