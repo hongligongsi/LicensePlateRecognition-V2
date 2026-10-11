@@ -112,11 +112,16 @@ def test_to_single_line_passes_through_single_row() -> None:
 
 
 def test_to_single_line_splits_two_bands() -> None:
-    """上短下长的双行牌应被拆开并横向拼接。"""
-    roi = np.full((80, 200, 3), 255, dtype=np.uint8)
+    """上短下长的双行牌应被拆开并横向拼接。
+
+    注意样图比例取真实双行牌的 2:1（440x220mm）；
+    更宽的图（>2.35:1）会被 ``split_double_line`` 的宽高比门槛
+    正确地视为单行牌而不拆分。
+    """
+    roi = np.full((80, 160, 3), 255, dtype=np.uint8)
     # 上行：短文本，下行：长文本
-    cv2.putText(roi, "AA", (60, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
-    cv2.putText(roi, "12345", (10, 72), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
+    cv2.putText(roi, "AA", (48, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
+    cv2.putText(roi, "12345", (8, 72), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3)
 
     layouts = _to_single_line(roi)
     assert len(layouts) == 2, f"应产出[原图, 拼接图]，实际 {len(layouts)}"
@@ -138,9 +143,9 @@ def test_to_single_line_handles_tiny_input() -> None:
 
 
 def test_to_single_line_accepts_grayscale() -> None:
-    gray = np.full((80, 200), 255, dtype=np.uint8)
-    cv2.putText(gray, "AA", (60, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 0, 3)
-    cv2.putText(gray, "12345", (10, 72), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 0, 3)
+    gray = np.full((80, 160), 255, dtype=np.uint8)
+    cv2.putText(gray, "AA", (48, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 0, 3)
+    cv2.putText(gray, "12345", (8, 72), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 0, 3)
     layouts = _to_single_line(gray)
     assert len(layouts) >= 1
 

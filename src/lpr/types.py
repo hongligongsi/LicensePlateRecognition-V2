@@ -2,6 +2,15 @@
 
 无论是传统 CV 引擎还是深度学习引擎，都必须返回 ``PlateResult`` 列表，
 这样界面层和 CLI 层就不需要知道底层用的是哪个引擎。
+
+车牌的描述由三个**正交**维度构成：
+
+* ``text``   —— 号码本身（如 ``京A12345``）
+* ``color``  —— 底色（蓝/黄/绿/白/黑，外加危险品的黑底黄字）
+* ``layout`` —— 版式（单行 / 双层）
+
+颜色与版式必须分开表达：大型汽车号牌是"黄底双行"，小型汽车是"蓝底单行"，
+而大型新能源车也有"黄绿双拼双行"的形态，仅用颜色或仅用版式都会丢信息。
 """
 
 from __future__ import annotations
@@ -23,11 +32,14 @@ class PlateColor(str, Enum):
     ==========  ============  =====================================
     BLACK       黑色          使领馆、境外车辆
     BLUE        蓝色          小型汽车（最常见）
-    GREEN       绿色          新能源、农用
+    GREEN       绿色          新能源、农用、民航
     WHITE       白色          警用、军队、特种车辆
     YELLOW      黄色          大型汽车、教练车
     HAZMAT      —             危险品运输车辆（黑底黄字，需极性判定）
     ==========  ============  =====================================
+
+    注意：**底色与版式是独立的两个维度**，见 :class:`PlateLayout`。
+    同样是黄牌，小型教练车是单行、大型汽车后号牌是双层。
     """
 
     BLACK = "black"
@@ -41,6 +53,60 @@ class PlateColor(str, Enum):
     @property
     def label(self) -> str:
         return _COLOR_LABEL[self]
+
+
+class PlateLayout(str, Enum):
+    """车牌版式：单行 / 双层（双行）。
+
+    版式与**底色是相互独立**的两个维度：大型汽车的后号牌与挂车号牌是
+    "黄底 + 双行"，小型汽车是"蓝底 + 单行"，新能源是"绿底 + 单行"，
+    大型新能源与部分特种车的绿牌也走双行。因此仅靠颜色无法判断版式，
+    需要单独记录。
+
+    ==========  ====================================================
+    枚举值      说明
+    ==========  ====================================================
+    SINGLE      单行（横向一行字符）—— 绝大多数乘用车
+    DOUBLE      双层 / 双行 —— 大型汽车后号牌、挂车号牌、双层绿牌
+    UNKNOWN     未能判定（未检测到行分割或未展开双行形态时）
+    ==========  ====================================================
+    """
+
+    SINGLE = "single"
+    DOUBLE = "double"
+    UNKNOWN = "unknown"
+
+    @property
+    def label(self) -> str:
+        return _LAYOUT_LABEL[self]
+
+
+_LAYOUT_LABEL = {
+    PlateLayout.SINGLE: "单行",
+    PlateLayout.DOUBLE: "双层",
+    PlateLayout.UNKNOWN: "未知版式",
+}
+
+#: 版式的规范显示名，供 ``--layout`` 参数与界面下拉使用
+LAYOUT_NAMES = ("单行", "双层")
+
+LAYOUT_ALIASES = {
+    "单行": PlateLayout.SINGLE,
+    "单": PlateLayout.SINGLE,
+    "single": PlateLayout.SINGLE,
+    "双层": PlateLayout.DOUBLE,
+    "双行": PlateLayout.DOUBLE,
+    "双": PlateLayout.DOUBLE,
+    "double": PlateLayout.DOUBLE,
+}
+
+
+def parse_layout(name: str) -> PlateLayout:
+    """把用户输入的版式名解析成枚举，不合法时抛 ``ValueError``。"""
+    key = name.strip().lower()
+    if key in LAYOUT_ALIASES:
+        return LAYOUT_ALIASES[key]
+    raise ValueError(f"未知车牌版式 {name!r}，可选: " + "、".join(LAYOUT_NAMES))
 
 
 #: 五种常规底色的规范显示名（与行驶证用词一致）
@@ -110,6 +176,8 @@ class PlateResult:
     text: str = ""
     #: 车牌底色
     color: PlateColor = PlateColor.UNKNOWN
+    #: 车牌版式（单行 / 双层）
+    layout: PlateLayout = PlateLayout.UNKNOWN
     #: 车牌在原图中的位置 ``(x, y, w, h)``，未知时为 ``None``
     bbox: tuple[int, int, int, int] | None = None
     #: 车牌区域图像（BGR 或灰度），用于界面展示
@@ -134,6 +202,8 @@ class PlateResult:
             "text": self.text,
             "color": self.color.value,
             "color_label": self.color.label,
+            "layout": self.layout.value,
+            "layout_label": self.layout.label,
             "bbox": list(self.bbox) if self.bbox else None,
             "confidence": round(self.confidence, 4),
             "engine": self.engine,
@@ -145,4 +215,8 @@ class PlateResult:
         if not self.ok:
             return "<未识别到车牌>"
         bbox = f" @{self.bbox}" if self.bbox else ""
-        return f"{self.text} [{self.color.label}] 置信度={self.confidence:.2f}{bbox}"
+        layout = "" if self.layout is PlateLayout.UNKNOWN else f" {self.layout.label}"
+        return (
+            f"{self.text} [{self.color.label}{layout}] "
+            f"置信度={self.confidence:.2f}{bbox}"
+        )

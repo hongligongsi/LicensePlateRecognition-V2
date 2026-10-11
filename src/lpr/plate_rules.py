@@ -14,6 +14,7 @@
 * 挂车号牌：省份 + 字母 + 5 位 + ``挂``
 * 教练车：省份 + 字母 + 4 位 + ``学``
 * 港澳入出境：``粤Z`` 开头 + 4 位 + ``港``/``澳``
+* 民航号牌：``民航`` + 管理局字母 + 4 位数字（如 ``民航A0001``）
 """
 from __future__ import annotations
 
@@ -35,6 +36,10 @@ LEGACY_MILITARY_LETTERS = set("VKBSLJNGC")
 
 #: 武警车牌字头
 ARMED_POLICE_HEADS = set("WJ")
+
+#: 民航号牌的管理局代号字母（依据 CCAR-331SB-R1）
+#: A=华北局 B=华东局 C=中南局 D=西南局 E=西北局 F=东北局 G=新疆局
+CIVIL_AVIATION_HEADS = "ABCDEFG"
 
 #: 常见混淆字符对，纠错时按"目标位置允许的字符集"来选
 CONFUSION_MAP: dict[str, str] = {
@@ -75,6 +80,18 @@ D = "0-9"
 
 #: 所有支持的车牌格式，**顺序重要**：越具体的排在越前面
 FORMATS: list[PlateFormat] = [
+    # 民航号牌（"民航" + 管理局字母 + 4 位数字，如 民航A0001）。
+    # 必须放在最前："民"不是省份简称、也不是军队/使领馆字头，现有格式都不会
+    # 误吞它，但它开头的两个字是中文，任何以省份简称开头的规则都匹配不到，
+    # 所以放在最前只是为了让匹配语义更清晰（越具体越靠前）。
+    # 依据 CCAR-331SB-R1：绿底白字白框线，440x140mm，用于机场摆渡车、
+    # 专用作业车、登机梯车等场内车辆。
+    PlateFormat(
+        "民航",
+        re.compile(rf"民航[{CIVIL_AVIATION_HEADS}][{D}]{{4}}$"),
+        6,
+        6,
+    ),
     # 港澳入出境（粤Z + 4 位 + 港/澳）
     PlateFormat("港澳入出境", re.compile(rf"粤Z[{AN}]{{4}}[港澳]$"), 7, 7),
     # 警用（省 + 字母 + 4~5 位数字 + 警）
@@ -298,24 +315,55 @@ def plate_score(text: str) -> float:
 
 
 def describe(text: str) -> dict:
-    """返回号码的解析信息，用于结果展示与审计。"""
+    """返回号码的解析信息，用于结果展示与审计。
+
+    除了格式名，还给出**该格式通常对应的版式**（``layout_hint``）。
+    号码本身无法表达"单行/双层"（``京A12345`` 既是单行大车牌也可能是双层
+    大型车后号牌），若调用方从图像上量出了版式，应以图像判定为准；
+    这里的 hint 只在图像无法判定时作为兜底先验。
+    """
     fmt = identify_format(text)
+    name = fmt.name if fmt else "未知"
     return {
         "text": text,
         "valid": fmt is not None,
-        "type": fmt.name if fmt else "未知",
+        "type": name,
         "province": text[0] if text and text[0] in PROVINCE_CHARS else None,
         "issuer": text[1] if len(text) > 1 else None,
-        "is_new_energy": bool(fmt and fmt.name == "新能源"),
-        "is_hazmat": bool(fmt and fmt.name == "危险品运输"),
+        "is_new_energy": name == "新能源",
+        "is_hazmat": name == "危险品运输",
+        "is_civil_aviation": name == "民航",
+        "layout_hint": DEFAULT_LAYOUT.get(name),
     }
+
+
+#: 各格式**默认**的版式先验。真实世界存在例外（如大型新能源车牌为双行绿牌），
+#: 因此这里只作为图像判定失败时的兜底值，不作为硬性结论。
+DEFAULT_LAYOUT: dict[str, str] = {
+    # 大型汽车的后号牌是双行（前号牌为单行，但识别时通常看到的是后牌）
+    "挂车": "double",
+    "危险品运输": "double",
+    # 民航、使领馆、警用、教练车、军队、武警均为单行
+    "民航": "single",
+    "使领馆": "single",
+    "警用": "single",
+    "教练车": "single",
+    "港澳入出境": "single",
+    "新能源": "single",
+    "普通民用": "single",
+    "短牌": "single",
+    "军队": "single",
+    "武警": "single",
+}
 
 
 __all__ = [
     "PROVINCE_CHARS",
     "SEQ_LETTERS",
     "ISSUER_LETTERS",
+    "CIVIL_AVIATION_HEADS",
     "FORMATS",
+    "DEFAULT_LAYOUT",
     "PlateFormat",
     "identify_format",
     "is_valid",

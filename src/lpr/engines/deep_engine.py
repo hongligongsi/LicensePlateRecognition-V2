@@ -46,7 +46,7 @@ import numpy as np
 
 from ..config import EngineConfig
 from ..plate_rules import correct, plate_score
-from ..types import PlateColor, PlateResult
+from ..types import PlateColor, PlateLayout, PlateResult
 from ..utils.image import imread, resize_max_side
 from ..utils.logging_setup import get_logger
 from ..utils.security import Limits, check_image
@@ -58,10 +58,13 @@ logger = get_logger("engines.deep")
 #: 车牌号码正则（用于从 OCR 文本中抽取号码）
 #: 末位的中文标识（警/挂/学/危/港/澳/使/领）必须允许，否则危险品运输牌
 #: ``京A1234危``、警牌 ``京A1234警`` 这类号码会被截断成非法长度。
+#: 民航号牌以"民航"两字开头（如 民航A0001），既不是省份简称也不是军队
+#: 字头，必须单独开一个分支，否则 OCR 抽不出这段文本。
 _PLATE_TEXT = re.compile(
     r"[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新]"
     r"[A-Z][A-Z0-9]{3,6}[警挂学危港澳]?"
     r"|[军空海北沈兰济南广成使][A-Z][A-Z0-9]{3,6}[警挂学危]?"
+    r"|民航[A-G][0-9]{3,4}"
 )
 #: 纯字母数字（可能是号码的一部分）
 _BARE_TEXT = re.compile(r"^[A-Z0-9]{5,8}$")
@@ -73,6 +76,11 @@ _SHARPEN_LEVELS = (0.0, 0.8)
 
 #: 早停阈值：语法合法性达到该值即可结束投票
 _EARLY_STOP_SCORE = 0.6
+
+#: 判定"双层牌"时允许的最大宽高比。
+#: 单行牌 440x140mm（≈3.14:1），双行牌 440x220mm（≈2.0:1）。
+#: 取 2.35 作为上限：再宽就不可能是双行牌，那两段"行带"是边框而非两行字符。
+_DOUBLE_MAX_ASPECT = 2.35
 
 
 def _probe_rapidocr() -> tuple[bool, str]:
@@ -107,17 +115,58 @@ def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
     而识别网络按单行文本训练，直接整块送入会读成两段并丢失关联。
     这里按水平投影找出行间空白，把两行拆开后横向拼接成单行，
     若无法可靠拆分则原样返回（由调用方按原图走一次）。
+
+    返回值的第一项恒为原图，第二项（若存在）为拼接后的单行图。
+    判断"是否为双层"请用 :func:`split_double_line`，不要靠本函数的长度。
+    """
+    # 复用 split_double_line 的切分结果，避免两处逻辑各写一份导致不一致
+    pair = split_double_line(roi)
+    if pair is None:
+        return [roi]
+
+    top, bottom = pair
+    # 横向拼接：高度对齐到两者较大值，宽度累加
+    target_h = max(top.shape[0], bottom.shape[0])
+
+    def _fit_height(band: np.ndarray) -> np.ndarray:
+        scale = target_h / max(1, band.shape[0])
+        new_w = max(1, int(round(band.shape[1] * scale)))
+        return cv2.resize(band, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
+
+    stacked = np.hstack([_fit_height(top), _fit_height(bottom)])
+    return [roi, stacked]
+
+
+def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """判断候选区是否是「双层（双行）」车牌，是则返回上下两条行带。
+
+    判据有两条，**全部**满足才算双层：
+
+    1. 水平投影上恰好存在 2 段字符行带，且中间有真实空白间隔；
+    2. 整块区域的高度明显偏大 —— 双行牌（440x220mm）的宽高比只有约 2:1，
+       而单行牌（440x140mm）是约 3.1:1。若宽高比仍大于 ``_DOUBLE_MAX_ASPECT``，
+       说明那两段"行带"更可能是单行牌被上下装饰条切出来的，不该判为双层。
+
+    第 2 条很关键：早期只按行带数量判断时，一个带上下边框的单行牌会被
+    误判成双层，进而被拆开拼接成乱码。
+
+    Returns:
+        ``(上行, 下行)`` 图块，或 ``None``（不是双层牌）。
     """
     h, w = roi.shape[:2]
     if h < 12 or w < 12:
-        return [roi]
+        return None
+
+    # 宽高比过大 → 不可能是双行牌（双行牌高度约为宽度的一半）
+    if w / max(1, h) > _DOUBLE_MAX_ASPECT:
+        return None
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
     # 二值化后统计每一行的前景像素数，找出字符所在的行带
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     profile = (binary > 0).sum(axis=1)
     if profile.max() <= 0:
-        return [roi]
+        return None
 
     active = profile > max(1, int(0.02 * w))
     # 找出连续的前景行段
@@ -135,26 +184,45 @@ def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
 
     # 只有恰好两段、且中间有真实空白时才视为双行
     if len(bands) != 2:
-        return [roi]
+        return None
     gap = bands[1][0] - bands[0][1]
     if gap < max(1, int(0.02 * h)):
-        return [roi]
+        return None
 
     top = roi[bands[0][0]:bands[0][1], :]
     bottom = roi[bands[1][0]:bands[1][1], :]
     if top.size == 0 or bottom.size == 0:
-        return [roi]
+        return None
+    return top, bottom
 
-    # 横向拼接：高度对齐到两者较大值，宽度累加后整体缩放回原宽高比附近
-    target_h = max(top.shape[0], bottom.shape[0])
 
-    def _fit_height(band: np.ndarray) -> np.ndarray:
-        scale = target_h / max(1, band.shape[0])
-        new_w = max(1, int(round(band.shape[1] * scale)))
-        return cv2.resize(band, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
+def measure_layout(roi: np.ndarray, cfg: EngineConfig | None = None) -> str:
+    """从车牌图像判定版式（单行 / 双层）。
 
-    stacked = np.hstack([_fit_height(top), _fit_height(bottom)])
-    return [roi, stacked]
+    优先按行分割证据判定；若行分割不可靠，退化为**宽高比**先验：
+    单行牌 440x140mm（≈3.14:1），双行牌 440x220mm（≈2:1）。
+    500x400 放大倍数下的经验阈值取 2.6。
+
+    Returns:
+        ``"single"`` / ``"double"`` / ``"unknown"``（供 ``PlateLayout`` 解析）
+    """
+    if roi is None or roi.size == 0:
+        return "unknown"
+
+    h, w = roi.shape[:2]
+    if h < 8 or w < 8:
+        return "unknown"
+
+    if split_double_line(roi) is not None:
+        return "double"
+
+    aspect = w / max(1, h)
+    # 双行牌的宽高比上限约 2.3；留一点余量到 2.6 再往上算单行
+    if aspect <= 2.35:
+        return "double"
+    if aspect >= 2.6:
+        return "single"
+    return "unknown"
 
 
 def _upscale(roi: np.ndarray, factor: float) -> np.ndarray:
@@ -430,12 +498,15 @@ class DeepEngine(BaseEngine):
             if measured is not PlateColor.UNKNOWN:
                 color = measured
 
+            layout = PlateLayout(measure_layout(roi))
+
             confidence = float(np.clip(0.5 * plate_score(corrected) + 0.4 * share + 0.1, 0, 1))
 
             results.append(
                 PlateResult(
                     text=corrected,
                     color=color,
+                    layout=layout,
                     bbox=bbox,
                     roi=roi,
                     confidence=confidence,
@@ -447,6 +518,7 @@ class DeepEngine(BaseEngine):
                         "agreement": round(share, 3),
                         "variants": sorted(votes.items(), key=lambda kv: -kv[1])[:3],
                         "corrections": changes,
+                        "aspect": round(roi.shape[1] / max(1, roi.shape[0]), 2),
                     },
                 )
             )
@@ -482,6 +554,7 @@ class DeepEngine(BaseEngine):
                 PlateResult(
                     text=plate_text,
                     color=color,
+                    layout=PlateLayout(measure_layout(roi)) if roi.size else PlateLayout.UNKNOWN,
                     bbox=bbox,
                     roi=roi if roi.size else None,
                     confidence=float(np.clip(0.6 * score + 0.4 * plate_score(plate_text), 0, 1)),
@@ -584,6 +657,7 @@ class DeepEngine(BaseEngine):
         return PlateResult(
             text=corrected,
             color=color,
+            layout=PlateLayout(measure_layout(roi)) if roi.size else PlateLayout.UNKNOWN,
             bbox=(x0, y0, x1 - x0, y1 - y0),
             roi=roi if roi.size else None,
             confidence=float(np.clip(0.5 * score + 0.5 * plate_score(corrected), 0, 1)),
@@ -630,4 +704,4 @@ def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     return inter / union if union > 0 else 0.0
 
 
-__all__ = ["DeepEngine"]
+__all__ = ["DeepEngine", "split_double_line", "measure_layout"]

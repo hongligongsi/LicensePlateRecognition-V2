@@ -324,3 +324,75 @@ _REFINE_BASE = {PlateColor.HAZMAT: PlateColor.BLACK}
 |---|---|
 | `tools/benchmark.py` | 性能 + 安全 + 覆盖统计（13 格式 / 10 类型 / 6 底色）|
 | `tools/make_color_samples.py` | 合成六种底色样张，逐张核对判定结果是否与预期一致 |
+
+---
+
+# v2.2.0：12 大类车牌全覆盖 + 版式（单行/双层）维度
+
+用户点名的 12 类：单行蓝牌、单行黄牌、新能源、白色警用、教练车、武警、
+双层黄牌、双层白牌、使用馆（使领馆）、港澳粤Z、双层绿牌、民航。
+
+核查结论：前 11 类的**号码格式**均已支持，缺的是两块——
+
+1. **民航车牌完全没有代码路径**（`民航A0001` 判为"未知/不合法"）
+2. **"双层"没有表达维度**：双层黄/白/绿牌与单行同号码（`京A12345` 既是
+   单行蓝牌也可能是双层大车后牌），仅凭号码与颜色无法区分
+
+## 1. 民航号牌（依据 CCAR-331SB-R1）
+
+* 格式：`民航` + 管理局字母 + 4 位数字，如 `民航A0001`
+* 字母表：A=华北局 B=华东局 C=中南局 D=西南局 E=西北局 F=东北局 G=新疆局
+* 外观：绿底白字白框线，440×140mm；用于机场摆渡车、专用作业车、登机梯车
+
+代码改动：
+
+```python
+# plate_rules.py —— FORMATS 最前新增
+CIVIL_AVIATION_HEADS = "ABCDEFG"
+PlateFormat("民航", re.compile(rf"民航[{CIVIL_AVIATION_HEADS}][{D}]{{4}}$"), 6, 6),
+
+# deep_engine.py —— _PLATE_TEXT 抽取正则新增分支（"民"不是省份简称，
+# 现有规则匹配不到这两个字开头的文本）
+r"|民航[A-G][0-9]{3,4}"
+```
+
+`describe()` 新增 `is_civil_aviation` 字段。
+
+## 2. 版式维度 PlateLayout
+
+新增与底色**正交**的枚举：
+
+```python
+class PlateLayout(str, Enum):
+    SINGLE = "single"    # 单行 —— 绝大多数乘用车
+    DOUBLE = "double"    # 双层 —— 大车后牌、挂车、双层绿牌
+    UNKNOWN = "unknown"
+```
+
+* `PlateResult` 新增 `layout` 字段，`to_dict()` 输出 `layout`/`layout_label`
+* `parse_layout("双层")` 供 CLI/界面解析用户输入
+* `plate_rules.describe()` 新增 `layout_hint`（各格式的版式先验兜底）
+
+## 3. 版式判定：split_double_line + measure_layout
+
+把原来 `_to_single_line` 里的行拆分逻辑提取为独立的 `split_double_line()`，
+并加上**宽高比门槛**（`_DOUBLE_MAX_ASPECT = 2.35`）：
+
+* 单行牌 440×140mm ≈ 3.14:1，双行牌 440×220mm ≈ 2.0:1
+* 只有「投影切出恰好 2 段行带」**且**「宽高比 ≤ 2.35」才判双层
+* 第 2 条很关键：带上下装饰边框的单行牌投影上也会切出两段，
+  没有宽高比门槛会被误拆成乱码（真实踩坑，见回归测试）
+
+`measure_layout(roi)` 组合两个证据源：行分割成功 → double；
+否则按宽高比先验（≤2.35 → double，≥2.6 → single，之间 → unknown）。
+识别管线对每个候选自动回填 `result.layout`。
+
+## 4. 测试与基准
+
+* 新增 `tests/test_twelve_kinds.py`（36 项）：12 类逐项类型判定、民航字母表
+  边界（A-G 合法 / H 非法、位数 3/4/5）、版式枚举与解析、`describe` 的
+  layout_hint 全格式覆盖、合成单行/双行图的版式判定、带边框单行牌不误判回归
+* 修正旧用例 `test_to_single_line_splits_two_bands`：原样图 200×80（2.5:1）
+  超出真实双行牌比例，被新的宽高比门槛正确拦截 —— 改为 2:1 真实比例
+* 测试总数 232 → **286**，全部通过
+* 真实样张回归：与 v2.1.1 基线完全一致（9 张同样 7 命中、号码逐一相同），无性能回退
