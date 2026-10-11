@@ -1,0 +1,15 @@
+{
+  "engine": {
+    "default": "cv",
+    "mode": "single",
+    "locate": {
+      "max_side": 1200,
+      "blur_kernel": 3
+    }
+  },
+  "ui": {
+    "window_title": "车牌识别系统 v2",
+    "camera_interval": 0.35
+  },
+  "log_level": "INFO"
+}

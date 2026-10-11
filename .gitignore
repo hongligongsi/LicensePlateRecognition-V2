@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# 测试与工具
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# 运行产物
+annotated/
+output/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# 深度学习模型缓存（运行时下载）
+~/.rapidocr/

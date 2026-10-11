@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lpr-v2"
+version = "2.0.0"
+description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "License-Plate-Recognition contributors" }]
+keywords = ["license-plate", "ocr", "opencv", "车牌识别", "lpr"]
+
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.10,<5",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# 深度学习引擎（推荐，精度显著高于传统 CV）
+deep = ["rapidocr-onnxruntime>=1.2"]
+deep-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.5"]
+# 图形界面
+gui = ["PySide6>=6.5"]
+# 开发
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+lpr = "lpr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

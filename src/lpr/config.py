@@ -1,0 +1,207 @@
+"""集中配置。
+
+原项目把参数放在 ``config.js``（其实是 JSON）里，并且是"前两套硬编码参数
+二选一"的模式，改参数必须重启进程。这里改成：
+
+1. 参数来自 dataclass，有默认值、有类型检查、有文档；
+2. 支持从 ``config.json`` 覆盖，也支持环境变量覆盖；
+3. 参数按**相对比例**而非绝对像素表达，从而对分辨率免疫
+   （原项目最大的痛点就是换个像素的车牌就定位不到）。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
+from typing import Any
+
+#: 项目根目录（``lpr/config.py`` 往上三级）
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = PROJECT_ROOT / "models"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
+
+
+@dataclass
+class LocateConfig:
+    """车牌定位相关参数。
+
+    原版 ``config.js`` 里的 ``morphologyr/col_num_limit/row_num_limit`` 等
+    都是**写死的像素值**，只在 1000px 宽、车牌约占画面 1/8 的图上有效。
+    这里改成比例，使同一套参数能在 640px 到 4000px 的图上通用。
+    """
+
+    #: 送进算法前把长边缩放到不超过该值，兼顾速度与精度
+    max_side: int = 1200
+    #: 高斯模糊核（奇数，0 表示跳过）
+    blur_kernel: int = 3
+    #: 开运算核大小，用于削弱非车牌纹理（相对图宽的万分比）
+    open_kernel_ratio: float = 0.02
+    #: 闭/开运算核（高, 宽），相对图高的千分比 / 图宽的千分比
+    morph_kernel_ratio: tuple[float, float] = (0.005, 0.021)
+    #: Canny 双阈值
+    canny_low: int = 100
+    canny_high: int = 200
+    #: 候选矩形的最小面积（占全图面积比例）
+    min_area_ratio: float = 0.0015
+    #: 车牌候选的长宽比范围
+    min_aspect: float = 2.0
+    max_aspect: float = 5.5
+    #: 颜色判定：某颜色像素占比超过该值即认定为此色
+    color_ratio: float = 0.5
+    #: 精定位时某行/列颜色像素占比阈值
+    color_row_ratio: float = 0.8
+    #: 绿牌渐变严重，横向阈值单独放宽
+    color_row_ratio_green: float = 0.5
+    #: 候选矩形外扩像素，防止车牌边缘被裁掉
+    box_padding: int = 5
+    #: 字符分割后要求的最少字符数（含省份简称共 7 位，留出容错）
+    min_chars: int = 6
+    #: 最多保留多少个候选车牌进入字符识别
+    max_candidates: int = 5
+
+    def validate(self) -> None:
+        if self.blur_kernel and self.blur_kernel % 2 == 0:
+            raise ValueError("blur_kernel 必须是奇数或 0")
+        if not 0 < self.color_ratio <= 1:
+            raise ValueError("color_ratio 必须在 (0, 1]")
+        if self.min_aspect >= self.max_aspect:
+            raise ValueError("min_aspect 必须小于 max_aspect")
+        if self.min_chars < 1:
+            raise ValueError("min_chars 必须为正")
+
+
+@dataclass
+class EngineConfig:
+    """引擎选择与运行方式。"""
+
+    #: 默认引擎："cv"（传统）| "deep"（深度学习）
+    default: str = "cv"
+    #: 引擎组合模式："single"（只用 default）| "cascade"（先传统，失败再深度）
+    mode: str = "single"
+    #: 传统 CV 引擎参数
+    locate: LocateConfig = field(default_factory=LocateConfig)
+    #: 字符识别时是否启用 SVM 置信度加权投票
+    use_confidence: bool = True
+
+    def validate(self) -> None:
+        if self.default not in ("cv", "deep"):
+            raise ValueError(f"未知引擎: {self.default}")
+        if self.mode not in ("single", "cascade"):
+            raise ValueError(f"未知模式: {self.mode}")
+        self.locate.validate()
+
+
+@dataclass
+class UIConfig:
+    """界面相关。"""
+
+    window_title: str = "车牌识别系统 v2"
+    window_size: tuple[int, int] = (1280, 800)
+    #: 摄像头识别间隔（秒），原版固定 2 秒，这里可调
+    camera_interval: float = 0.35
+    #: 摄像头采集分辨率
+    camera_resolution: tuple[int, int] = (1280, 720)
+    theme: str = "light"
+    max_history: int = 200
+
+
+@dataclass
+class Config:
+    """顶层配置。"""
+
+    engine: EngineConfig = field(default_factory=EngineConfig)
+    ui: UIConfig = field(default_factory=UIConfig)
+    #: 日志级别
+    log_level: str = "INFO"
+
+    @classmethod
+    def load(cls, path: str | Path | None = None) -> "Config":
+        """从 JSON 文件加载配置，文件不存在则使用默认值。
+
+        支持点号路径的浅层覆盖，例如 ``{"engine": {"locate": {"max_side": 1600}}}``。
+        """
+        cfg = cls()
+        path = Path(path) if path else DEFAULT_CONFIG_PATH
+
+        if path.exists():
+            with path.open(encoding="utf-8") as fp:
+                raw = json.load(fp)
+            _apply_overrides(cfg.engine, raw.get("engine", {}))
+            _apply_overrides(cfg.ui, raw.get("ui", {}))
+            if "log_level" in raw:
+                cfg.log_level = str(raw["log_level"])
+
+        # 环境变量优先级最高，便于临时调试
+        if env_engine := os.getenv("LPR_ENGINE"):
+            cfg.engine.default = env_engine
+        if env_level := os.getenv("LPR_LOG_LEVEL"):
+            cfg.log_level = env_level
+
+        cfg.engine.validate()
+        return cfg
+
+    def save(self, path: str | Path | None = None) -> Path:
+        """把当前配置写回 JSON 文件。"""
+        path = Path(path) if path else DEFAULT_CONFIG_PATH
+        payload = {
+            "engine": _to_plain(self.engine),
+            "ui": _to_plain(self.ui),
+            "log_level": self.log_level,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        return path
+
+
+def _to_plain(obj: Any) -> Any:
+    """把 dataclass 转成纯 dict/list/tuple。"""
+    if hasattr(obj, "__dataclass_fields__"):
+        out = {}
+        for f in fields(obj):
+            out[f.name] = _to_plain(getattr(obj, f.name))
+        return out
+    if isinstance(obj, tuple):
+        return list(obj)
+    return obj
+
+
+def _apply_overrides(target: Any, overrides: dict) -> None:
+    """把 overrides 中认识的字段写进 dataclass 实例，忽略未知键。"""
+    known = {f.name: f for f in fields(target)}
+    for key, value in overrides.items():
+        if key not in known:
+            continue
+        current = getattr(target, key)
+        if hasattr(current, "__dataclass_fields__") and isinstance(value, dict):
+            _apply_overrides(current, value)
+        else:
+            ftype = known[key].type
+            setattr(target, key, _coerce(value, current, ftype))
+
+
+def _coerce(value: Any, current: Any, ftype: Any) -> Any:
+    """尽量把 JSON 里的 list 还原成 tuple，把数字还原成 int/float。"""
+    if isinstance(current, tuple) and isinstance(value, list):
+        return tuple(value)
+    if isinstance(current, bool):
+        return bool(value)
+    if isinstance(current, int) and not isinstance(current, bool):
+        return int(value)
+    if isinstance(current, float):
+        return float(value)
+    return value
+
+
+__all__ = [
+    "Config",
+    "EngineConfig",
+    "LocateConfig",
+    "UIConfig",
+    "PROJECT_ROOT",
+    "MODELS_DIR",
+    "DEFAULT_CONFIG_PATH",
+    "asdict",
+]
