@@ -49,11 +49,53 @@ _COLOR_RANGES: dict[PlateColor, tuple[tuple[int, int, int], tuple[int, int, int]
     PlateColor.BLACK: ((0, 0, 0), (180, 255, 60)),
 }
 
+#: 需要投影裁剪时使用的掩码底色。
+#: 危险品牌是「黑底黄字」——投影应以**黑底**为基准（文字是前景，不该参与裁剪），
+#: 因此映射到 BLACK 而不是 YELLOW。
+_REFINE_BASE: dict[PlateColor, PlateColor] = {
+    PlateColor.HAZMAT: PlateColor.BLACK,
+}
+
 
 def _color_mask(hsv: np.ndarray, color: PlateColor) -> np.ndarray:
     """向量化生成某颜色的掩码。"""
+    color = _REFINE_BASE.get(color, color)
     low, high = _COLOR_RANGES[color]
     return cv2.inRange(hsv, np.array(low, np.uint8), np.array(high, np.uint8))
+
+
+def detect_hazmat(roi: np.ndarray, cfg: LocateConfig) -> bool:
+    """判断车牌是否为「危险品运输车辆」牌（黑底黄字）。
+
+    危险品运输车悬挂的是黑底黄字牌，而普通商用黄牌是黄底黑字，
+    两者底色与字色的明暗关系**恰好相反**。因此不能只看"有没有黄色"，
+    必须同时满足：
+
+    1. 主体为黑底（低亮度像素占多数）—— 排除黄底黑字的普通黄牌
+    2. 存在足够比例的黄色前景（文字）—— 排除普通黑牌（黑底白字）
+
+    第 1 条排除了黄底黑字，第 2 条排除了黑底白字，两条合起来才是黑底黄字。
+    """
+    if not cfg.detect_hazmat or roi is None or roi.size == 0:
+        return False
+
+    # 灰度图丢失了色相信息，无法区分"黑底黄字"与"黑底白字"，直接放弃判定
+    # （调用方应在 BGR 图上判定；灰度输入不会被误判为危险品，只会退回黑牌）
+    if roi.ndim == 2:
+        return False
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    total = roi.shape[0] * roi.shape[1]
+    if total == 0:
+        return False
+
+    yellow = cv2.countNonZero(_color_mask(hsv, PlateColor.YELLOW)) / total
+    dark = cv2.countNonZero(_color_mask(hsv, PlateColor.BLACK)) / total
+
+    if dark < cfg.hazmat_bg_ratio or yellow < cfg.hazmat_fg_ratio:
+        return False
+    # 黄字应只占少数；若黄色多于黑底，说明是黄底黑字的普通黄牌
+    return yellow / max(1e-6, yellow + dark) >= cfg.hazmat_fg_share
 
 
 def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]:
@@ -77,6 +119,12 @@ def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]
         scores[color] = ratio
 
     best_color, best_ratio = max(scores.items(), key=lambda kv: kv[1])
+
+    # 危险品牌优先判定：黄底黑字的普通黄牌会被下面那条拦截，
+    # 但只有先做极性分析才能把"黑底黄字"从"黄底黑字"里摘出来
+    if detect_hazmat(roi, cfg):
+        return PlateColor.HAZMAT, max(best_ratio, 0.5)
+
     if best_ratio >= cfg.color_ratio * 0.5:
         return best_color, best_ratio
 
@@ -302,6 +350,7 @@ __all__ = [
     "PlateCandidate",
     "locate_plates",
     "detect_color",
+    "detect_hazmat",
     "refine_by_color",
     "_order_quad",
 ]

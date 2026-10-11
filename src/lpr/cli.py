@@ -34,6 +34,7 @@ from .api import Recognizer
 from .config import Config
 from .engines import describe_engines
 from .plate_rules import correct, describe as describe_plate, is_valid
+from .types import parse_color
 from .utils.image import draw_result, imread, imwrite
 from .utils.logging_setup import setup_logging
 from .utils.security import (
@@ -45,7 +46,7 @@ from .utils.security import (
 )
 
 PROG = "lpr"
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -72,6 +73,14 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", metavar="DIR", help="输出 JSON + CSV 报告到指定目录")
     p.add_argument("--json", action="store_true", help="在终端以 JSON 输出")
     p.add_argument("--mask", action="store_true", help="对输出中的车牌号打码（隐私保护）")
+    p.add_argument(
+        "--color",
+        default=None,
+        help=(
+            "只保留指定底色的车牌，可多次或用逗号分隔。"
+            "可选：黑色/蓝色/绿色/白色/黄色/危险品（如 --color 黄色,危险品）"
+        ),
+    )
 
     # ---------------------------------------------------------- video
     p = sub.add_parser("video", help="识别视频文件或摄像头")
@@ -152,6 +161,24 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
         return 1
 
     batch = rec.recognize_many(sorted(targets), annotate_dir=args.save_annotated)
+
+    # 按底色过滤（可多选，如 --color 黄色,危险品）
+    wanted: set | None = None
+    if args.color:
+        try:
+            wanted = {
+                parse_color(name)
+                for name in str(args.color).replace("，", ",").split(",")
+                if name.strip()
+            }
+        except ValueError as exc:
+            print(f"参数错误: {exc}", file=sys.stderr)
+            return 2
+        before = sum(len(o.results) for o in batch.outcomes)
+        for outcome in batch.outcomes:
+            outcome.results = [r for r in outcome.results if r.color in wanted]
+        after = sum(len(o.results) for o in batch.outcomes)
+        print(f"底色过滤 {args.color}: {before} → {after} 个车牌")
 
     # 控制台输出同样受脱敏策略约束：开启 --mask 时不得回显明文车牌号。
     def _show(text: str) -> str:

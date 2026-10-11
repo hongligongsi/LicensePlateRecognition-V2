@@ -27,11 +27,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from lpr.api import Recognizer  # noqa: E402
-from lpr.config import Config  # noqa: E402
+from lpr.config import Config, LocateConfig  # noqa: E402
+from lpr.engines.locate import detect_color  # noqa: E402
 from lpr.plate_rules import FORMATS, is_valid  # noqa: E402
+from lpr.types import PlateColor  # noqa: E402
 from lpr.utils.image import imread  # noqa: E402
 from lpr.utils.security import (  # noqa: E402
     Limits,
@@ -160,7 +163,7 @@ def _bench_security() -> dict:
 
 
 def _bench_coverage() -> dict:
-    """统计车牌类型与输出格式的覆盖广度。"""
+    """统计车牌类型、底色与输出格式的覆盖广度。"""
     samples = {
         "普通民用": "京A12345",
         "新能源": "京AD77972",
@@ -170,14 +173,36 @@ def _bench_coverage() -> dict:
         "使领馆": "使123456",
         "挂车": "京A1234挂",
         "教练车": "京A123学",
+        "危险品运输": "京A1234危",
         "港澳入出境": "粤Z1234港",
     }
     covered = {k: is_valid(v) for k, v in samples.items()}
+
+    # 五种底色 + 危险品的判定（合成车牌，不依赖样本图）
+    color_cases = [
+        ("黑色", (10, 10, 10), (255, 255, 255), PlateColor.BLACK),
+        ("蓝色", (200, 80, 20), (255, 255, 255), PlateColor.BLUE),
+        ("绿色", (80, 200, 60), (10, 10, 10), PlateColor.GREEN),
+        ("白色", (245, 245, 245), (10, 10, 10), PlateColor.WHITE),
+        ("黄色", (0, 220, 255), (10, 10, 10), PlateColor.YELLOW),
+        ("危险品(黑底黄字)", (10, 10, 10), (0, 220, 255), PlateColor.HAZMAT),
+    ]
+    cfg = LocateConfig()
+    color_covered = {}
+    for name, bg, fg, expect in color_cases:
+        probe = np.full((60, 220, 3), bg, np.uint8)
+        cv2.putText(probe, "A1234", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.3, fg, 3)
+        got, _ = detect_color(probe, cfg)
+        color_covered[name] = got is expect
+
     return {
         "formats_defined": len(FORMATS),
         "types_tested": len(samples),
         "types_passed": sum(1 for v in covered.values() if v),
         "coverage": covered,
+        "colors_tested": len(color_cases),
+        "colors_passed": sum(1 for v in color_covered.values() if v),
+        "colors": color_covered,
         "output_formats": ["console", "json", "csv", "annotated_image", "annotated_video"],
         "input_sources": ["image", "directory", "video_file", "camera_stream", "ndarray"],
     }
@@ -216,6 +241,10 @@ def _print_report(engine_reports: list[dict], security: dict, coverage: dict) ->
     print("-" * 72)
     print(f"  已定义车牌格式: {coverage['formats_defined']} 种")
     print(f"  类型识别验证:   {coverage['types_passed']}/{coverage['types_tested']} 通过")
+    print(f"  底色识别验证:   {coverage['colors_passed']}/{coverage['colors_tested']} 通过")
+    failed_colors = [k for k, v in coverage.get("colors", {}).items() if not v]
+    if failed_colors:
+        print(f"    未通过底色: {', '.join(failed_colors)}")
     print(f"  输出格式:       {', '.join(coverage['output_formats'])}")
     print(f"  输入来源:       {', '.join(coverage['input_sources'])}")
 

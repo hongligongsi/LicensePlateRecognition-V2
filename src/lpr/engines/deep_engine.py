@@ -56,10 +56,12 @@ from .locate import detect_color, locate_plates, refine_by_color
 logger = get_logger("engines.deep")
 
 #: 车牌号码正则（用于从 OCR 文本中抽取号码）
+#: 末位的中文标识（警/挂/学/危/港/澳/使/领）必须允许，否则危险品运输牌
+#: ``京A1234危``、警牌 ``京A1234警`` 这类号码会被截断成非法长度。
 _PLATE_TEXT = re.compile(
     r"[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新]"
-    r"[A-Z][A-Z0-9]{4,6}"
-    r"|[军空海北沈兰济南广成使][A-Z][A-Z0-9]{4,6}"
+    r"[A-Z][A-Z0-9]{3,6}[警挂学危港澳]?"
+    r"|[军空海北沈兰济南广成使][A-Z][A-Z0-9]{3,6}[警挂学危]?"
 )
 #: 纯字母数字（可能是号码的一部分）
 _BARE_TEXT = re.compile(r"^[A-Z0-9]{5,8}$")

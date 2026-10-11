@@ -28,7 +28,7 @@ from .engines import (
 )
 from .plate_rules import correct, describe as describe_plate, is_valid, plate_score
 from .tracker import MultiPlateTracker, merge_same_image
-from .types import PlateColor, PlateResult
+from .types import COLOR_NAMES, PlateColor, PlateResult, parse_color
 from .utils.logging_setup import setup_logging
 from .utils.security import (
     Limits,
@@ -39,7 +39,7 @@ from .utils.security import (
     verify_model,
 )
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 
 __all__ = [
     # 高层 API
@@ -63,6 +63,8 @@ __all__ = [
     # 数据
     "PlateColor",
     "PlateResult",
+    "COLOR_NAMES",
+    "parse_color",
     # 规则与跟踪
     "correct",
     "is_valid",

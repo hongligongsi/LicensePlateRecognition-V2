@@ -23,7 +23,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 import numpy as np
 
@@ -33,7 +33,7 @@ from .engines.base import BaseEngine, EngineUnavailable
 from .plate_rules import describe as describe_plate
 from .plate_rules import plate_score
 from .tracker import MultiPlateTracker, merge_same_image
-from .types import PlateResult
+from .types import PlateColor, PlateResult
 from .utils.image import draw_result, imread, imwrite
 from .utils.logging_setup import get_logger
 from .utils.security import (
@@ -128,6 +128,30 @@ class BatchOutcome:
             for r in o.results:
                 seen[r.text] = seen.get(r.text, 0) + 1
         return sorted(seen, key=lambda k: -seen[k])
+
+    def keep_colors(self, colors: Iterable[PlateColor]) -> "BatchOutcome":
+        """就地按底色过滤，只保留指定底色的车牌。
+
+        支持五种底色（黑/蓝/绿/白/黄）与危险品运输牌。
+        典型用法是只挑出危险品运输车::
+
+            batch.keep_colors({parse_color("危险品")})
+
+        Returns:
+            self，便于链式调用。
+        """
+        wanted = set(colors)
+        for outcome in self.outcomes:
+            outcome.results = [r for r in outcome.results if r.color in wanted]
+        return self
+
+    def color_summary(self) -> dict[str, int]:
+        """统计各底色的车牌数量，便于快速了解批次构成。"""
+        counts: dict[str, int] = {}
+        for outcome in self.outcomes:
+            for res in outcome.results:
+                counts[res.color.label] = counts.get(res.color.label, 0) + 1
+        return counts
 
     def save_json(self, path: str | Path, privacy: PrivacyPolicy | None = None) -> Path:
         path = Path(path)

@@ -14,13 +14,28 @@ import numpy as np
 
 
 class PlateColor(str, Enum):
-    """车牌底色。原项目只用字符串，这里改为枚举避免拼写错误。"""
+    """车牌底色。
 
+    支持五种常规底色 + 危险品运输车牌：
+
+    ==========  ============  =====================================
+    枚举值      行驶证颜色     说明
+    ==========  ============  =====================================
+    BLACK       黑色          使领馆、境外车辆
+    BLUE        蓝色          小型汽车（最常见）
+    GREEN       绿色          新能源、农用
+    WHITE       白色          警用、军队、特种车辆
+    YELLOW      黄色          大型汽车、教练车
+    HAZMAT      —             危险品运输车辆（黑底黄字，需极性判定）
+    ==========  ============  =====================================
+    """
+
+    BLACK = "black"
     BLUE = "blue"
-    YELLOW = "yellow"
     GREEN = "green"
     WHITE = "white"
-    BLACK = "black"
+    YELLOW = "yellow"
+    HAZMAT = "hazmat"
     UNKNOWN = "unknown"
 
     @property
@@ -28,22 +43,61 @@ class PlateColor(str, Enum):
         return _COLOR_LABEL[self]
 
 
+#: 五种常规底色的规范显示名（与行驶证用词一致）
+COLOR_NAMES = ("黑色", "蓝色", "绿色", "白色", "黄色")
+
+#: 五种常规底色对应的中文规范名，供 ``--color`` 参数与界面下拉使用
+COLOR_ALIASES = {
+    "黑": PlateColor.BLACK,
+    "黑色": PlateColor.BLACK,
+    "black": PlateColor.BLACK,
+    "蓝": PlateColor.BLUE,
+    "蓝色": PlateColor.BLUE,
+    "blue": PlateColor.BLUE,
+    "绿": PlateColor.GREEN,
+    "绿色": PlateColor.GREEN,
+    "green": PlateColor.GREEN,
+    "白": PlateColor.WHITE,
+    "白色": PlateColor.WHITE,
+    "white": PlateColor.WHITE,
+    "黄": PlateColor.YELLOW,
+    "黄色": PlateColor.YELLOW,
+    "yellow": PlateColor.YELLOW,
+    "危险品": PlateColor.HAZMAT,
+    "危险品运输": PlateColor.HAZMAT,
+    "hazmat": PlateColor.HAZMAT,
+}
+
+
+def parse_color(name: str) -> PlateColor:
+    """把用户输入的颜色名解析成枚举，不合法时抛 ``ValueError``。"""
+    key = name.strip().lower()
+    if key in COLOR_ALIASES:
+        return COLOR_ALIASES[key]
+    raise ValueError(
+        f"未知车牌颜色 {name!r}，可选: "
+        + "、".join(COLOR_NAMES + ("危险品",))
+    )
+
+
 _COLOR_LABEL = {
+    PlateColor.BLACK: "黑牌",
     PlateColor.BLUE: "蓝牌",
-    PlateColor.YELLOW: "黄牌",
     PlateColor.GREEN: "绿牌（新能源）",
     PlateColor.WHITE: "白牌",
-    PlateColor.BLACK: "黑牌",
+    PlateColor.YELLOW: "黄牌",
+    PlateColor.HAZMAT: "危险品运输牌（黑底黄字）",
     PlateColor.UNKNOWN: "未知",
 }
 
 #: 界面中用于标出车牌颜色的色块（BGR）
 COLOR_SWATCH = {
+    PlateColor.BLACK: (60, 60, 60),
     PlateColor.BLUE: (255, 102, 102),
-    PlateColor.YELLOW: (0, 255, 255),
     PlateColor.GREEN: (85, 255, 85),
     PlateColor.WHITE: (255, 255, 255),
-    PlateColor.BLACK: (60, 60, 60),
+    PlateColor.YELLOW: (0, 255, 255),
+    PlateColor.HAZMAT: (0, 200, 255),
     PlateColor.UNKNOWN: (160, 160, 160),
 }
 

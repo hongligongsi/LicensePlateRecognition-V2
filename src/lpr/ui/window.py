@@ -53,11 +53,12 @@ logger = get_logger("ui.window")
 
 #: 颜色标签 → UI 颜色（RGB hex）
 _LABEL_HEX = {
-    PlateColor.BLUE.value: "#c8102e",   # 中国红（涨红习惯无所谓，这里是底色标记）
-    PlateColor.YELLOW.value: "#e6a700",
+    PlateColor.BLACK.value: "#444444",
+    PlateColor.BLUE.value: "#1e6fd9",
     PlateColor.GREEN.value: "#2e8b57",
     PlateColor.WHITE.value: "#888888",
-    PlateColor.BLACK.value: "#444444",
+    PlateColor.YELLOW.value: "#e6a700",
+    PlateColor.HAZMAT.value: "#c0392b",
     PlateColor.UNKNOWN.value: "#999999",
 }
 

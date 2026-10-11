@@ -202,3 +202,125 @@ python tools/benchmark.py --images samples --engine deep,cv --repeat 3 --json ou
 | `get_boxes_img_without_det` | 首次调用 `AssertionError` | 返回值是 `(dt_boxes, img_crop_list)` 二元组，需 `_, crops = ...` |
 | `rapidocr.text_rec` | `AttributeError` | 实际属性名为 `text_recognizer` |
 | `cv2.putText` 不支持中文 | 标注图显示 `???` | 改用 Pillow + `msyh.ttc` 绘制标签 |
+
+---
+
+# v2.1.1 补充：五种底色 + 危险品运输牌
+
+## 1. 五种底色（黑/蓝/绿/白/黄）
+
+| 枚举 | 值 | 中文名 | 适用车辆 |
+|---|---|---|---|
+| `PlateColor.BLACK` | `black` | 黑色 | 使领馆、境外车辆 |
+| `PlateColor.BLUE` | `blue` | 蓝色 | 小型汽车（最常见） |
+| `PlateColor.GREEN` | `green` | 绿色 | 新能源、农用 |
+| `PlateColor.WHITE` | `white` | 白色 | 警用、军队、特种车辆 |
+| `PlateColor.YELLOW` | `yellow` | 黄色 | 大型汽车、教练车 |
+
+配套新增：
+- `COLOR_NAMES`：五种底色的规范中文名元组
+- `COLOR_ALIASES` + `parse_color()`：接受中文全称/简称/英文（`黄色`/`黄`/`yellow`），供 CLI `--color` 与界面下拉使用
+- `COLOR_SWATCH`：界面色块，补齐五种底色
+
+## 2. 危险品运输牌（黑底黄字）
+
+危险品运输车辆悬挂 **黑底黄字** 牌。难点在于它与普通黄牌（**黄底黑字**）的
+底色与字色**恰好相反**，仅凭"存在黄色像素"无法区分。
+
+### 判定策略：明暗极性分析
+
+`detect_hazmat()` 同时要求三个条件成立：
+
+| 条件 | 阈值（可配） | 作用 |
+|---|---|---|
+| 黑色主体占比 ≥ 45% | `hazmat_bg_ratio` | **排除黄底黑字的普通黄牌** |
+| 黄色前景占比 ≥ 3% | `hazmat_fg_ratio` | **排除黑底白字的普通黑牌** |
+| 黄/(黄+黑) 比值 ≥ 6% | `hazmat_fg_share` | 确保黄字只是少量前景，而非大片黄底 |
+
+第 1 条排除普通黄牌、第 2 条排除普通黑牌，两条合起来才能唯一锁定黑底黄字。
+
+### 实测区分效果
+
+| 合成车牌 | 底色 | 字色 | 判定结果 |
+|---|---|---|---|
+| 危险品运输 | 黑 | 黄 | **危险品运输牌** ✓ |
+| 普通黄牌 | 黄 | 黑 | 黄牌 ✓（不误判为危险品）|
+| 普通黑牌 | 黑 | 白 | 黑牌 ✓（不误判为危险品）|
+| 蓝牌 | 蓝 | 白 | 蓝牌 ✓ |
+| 绿牌 | 绿 | 黑 | 绿牌 ✓ |
+| 白牌 | 白 | 黑 | 白牌 ✓ |
+
+### 号码格式
+
+新增 `危险品运输` 格式（省 + 字母 + 4~5 位数字 + `危`），必须在普通民用之前匹配，
+否则 `京A1234危` 会被吞成非法长度。
+
+```bash
+lpr check 京A1234危      # → ✓ 合法 类型=危险品运输
+```
+
+### 已知限制
+
+- **灰度输入无法判定**：灰度图丢失色相，"黑底黄字"与"黑底白字"不可区分。
+  `detect_hazmat` 对灰度输入保守返回 `False`（宁可漏判为黑牌，也不凭亮度猜出错误结论）。
+- 极端光照下黑底可能被压到纯黑、黄字泛白，此时极性特征减弱，可能退化为黑牌。
+
+## 3. OCR 文本抽取正则修正
+
+原 `_PLATE_TEXT` 正则不认末位中文标识，会把 `京A1234危`、`京A1234警` 截断。
+已补充末位标识字符集：
+
+```python
+_PLATE_TEXT = re.compile(
+    r"[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新]"
+    r"[A-Z][A-Z0-9]{3,6}[警挂学危港澳]?"
+    r"|[军空海北沈兰济南广成使][A-Z][A-Z0-9]{3,6}[警挂学危]?"
+)
+```
+
+## 4. 按底色筛选
+
+CLI：
+```bash
+lpr predict ./photos/ --color 危险品          # 只保留危险品运输车
+lpr predict ./photos/ --color 黄色,危险品      # 多底色（逗号分隔）
+lpr predict ./photos/ --color blue            # 中英文均可
+```
+
+API：
+```python
+batch.keep_colors({parse_color("危险品")})     # 就地过滤，返回 self 可链式调用
+batch.color_summary()                         # {"危险品运输牌（黑底黄字）": 2, "黄牌": 5}
+```
+
+## 5. 测试与基准
+
+- 新增 `tests/test_plate_color.py`（50 项）：枚举完整性、中英文别名解析、五种底色判定、
+  危险品与黄牌/黑牌的区分、灰度与空输入健壮性、号码格式、OCR 正则抽取、批量过滤 API
+- 测试总数 179 → **229**
+- `tools/benchmark.py` 新增底色覆盖检查：**13 种格式 / 10 类类型 / 6 种底色全部通过**
+
+## 6. 修复：HAZMAT 缺少 HSV 区间导致投影裁剪崩溃
+
+新增 `HAZMAT` 枚举后，`refine_by_color()` 走 `_color_mask(hsv, color)` 时
+因 `_COLOR_RANGES` 里没有 `HAZMAT` 键而抛 `KeyError`，**整条识别管线中断**。
+
+修复方式：引入 `_REFINE_BASE` 映射，把 `HAZMAT` 归到 `BLACK` 基准：
+
+```python
+_REFINE_BASE = {PlateColor.HAZMAT: PlateColor.BLACK}
+```
+
+理由是语义正确的：投影裁剪要剔除的是**非车牌背景**，而危险品牌的"底"是黑色，
+黄色字符属于前景（和黑牌的白字一样），不该参与裁剪基准。
+
+同时补充回归测试 `test_refine_by_color_supports_hazmat` 与
+`test_refine_by_color_all_colors_do_not_crash`（遍历全部枚举值），
+防止将来再加底色时重演同类崩溃。
+
+## 7. 新增工具的完整清单
+
+| 工具 | 用途 |
+|---|---|
+| `tools/benchmark.py` | 性能 + 安全 + 覆盖统计（13 格式 / 10 类型 / 6 底色）|
+| `tools/make_color_samples.py` | 合成六种底色样张，逐张核对判定结果是否与预期一致 |

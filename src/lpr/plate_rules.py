@@ -98,6 +98,9 @@ FORMATS: list[PlateFormat] = [
     PlateFormat("挂车", re.compile(rf"[{PROV}][{L}][{AN}]{{3,4}}挂$"), 6, 7),
     # 教练车（省 + 字母 + 3~4 位 + 学）
     PlateFormat("教练车", re.compile(rf"[{PROV}][{L}][{AN}]{{3}}学$"), 6, 6),
+    # 危险品运输（省 + 字母 + 4~5 位 + 危；公安部 GA36 标准中危险品运输车
+    # 为黑底黄字，号码末位标"危"。此格式必须在普通民用之前，否则会被吞掉）
+    PlateFormat("危险品运输", re.compile(rf"[{PROV}][{L}][{D}]{{4,5}}危$"), 7, 8),
     # 新能源（8 位：省 + 字母 + 6 位序号，序号区字母数字混排）
     # 真实规则中第 3 位起即为序号区，字母/数字皆可出现，末位通常为字母
     # （D=纯电、F=混动），但不强制。唯一可用的强约束是整串不能是纯数字，
@@ -304,6 +307,7 @@ def describe(text: str) -> dict:
         "province": text[0] if text and text[0] in PROVINCE_CHARS else None,
         "issuer": text[1] if len(text) > 1 else None,
         "is_new_energy": bool(fmt and fmt.name == "新能源"),
+        "is_hazmat": bool(fmt and fmt.name == "危险品运输"),
     }
 
 

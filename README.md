@@ -71,7 +71,23 @@ lpr predict ./photos/ --engine deep --mask --report out/   # 报告落盘同样�
 
 ### 四、更全面
 
-- **车牌类型**：普通民用 / 新能源 / 警用 / 军队 / 武警 / 使领馆 / 挂车 / 教练车 / 港澳入出境 / 短牌，共 **12 种格式定义**
+- **车牌底色（五种 + 危险品）**：
+
+  | 底色 | 适用车辆 |
+  |---|---|
+  | 蓝色 | 小型汽车（最常见） |
+  | 黄色 | 大型汽车、教练车 |
+  | 绿色 | 新能源、农用 |
+  | 白色 | 警用、军队、特种车辆 |
+  | 黑色 | 使领馆、境外车辆 |
+  | **危险品运输** | 黑底**黄字**，危险品运输车辆专用 |
+
+  > 危险品牌与普通黄牌**底色相反**（普通黄牌是黄底黑字），仅看"有没有黄色"无法区分。
+  > 实现上用**明暗极性判定**：要求「黑色主体占比 ≥ 45%」且「黄色前景占比 ≥ 3%」且
+  > 「黄字只占少数（≥ 6% 的 黄/(黄+黑) 比值）」，第 1 条排除黄底黑字、第 2 条排除黑底白字。
+  > 可用 `--color` 按底色过滤，例如只挑出危险品运输车：`lpr predict ./photos/ --color 危险品`
+
+- **车牌类型**：普通民用 / 新能源 / 警用 / 军队 / 武警 / 使领馆 / 挂车 / 教练车 / **危险品运输** / 港澳入出境 / 短牌，共 **13 种格式定义**
 - **双行牌支持**：自动检测「上短下长」的双行排布，拆行后横向拼接成单行再识别（商用车前后牌、摩托车牌）
 - **输入来源**：图片 / 目录（可递归）/ 视频文件 / 摄像头流 / numpy 数组
 - **输出格式**：控制台 / JSON / CSV / 标注图片 / 标注视频
@@ -106,8 +122,10 @@ lpr predict car.jpg --engine deep                 # 单图识别
 lpr predict ./photos/ --engine deep --recursive   # 目录批量（递归）
 lpr predict ./photos/ --save-annotated out/ann --report out/   # 标注图 + JSON/CSV 报告
 lpr predict car.jpg --engine deep --mask --json   # 脱敏输出
+lpr predict ./photos/ --color 危险品              # 只保留危险品运输牌
+lpr predict ./photos/ --color 黄色,危险品          # 多底色过滤（逗号分隔）
 lpr video parking.mp4 --stride 10 --output out.mp4 # 视频识别（跳帧 + 标注输出）
-lpr check 京AD77972 京0E51619 --fix               # 校验号码合法性并纠错
+lpr check 京A1234危 京AD77972 --fix               # 校验号码合法性并纠错
 lpr models --verify                               # 查看模型信息与哈希
 lpr gui                                           # 图形界面
 ```
@@ -126,6 +144,10 @@ print(outcome.best.text, outcome.best.confidence)
 batch = rec.recognize_many(["a.jpg", "b.jpg"], annotate_dir="out/ann")
 batch.save_json("out/report.json", PrivacyPolicy(mask_output=True))
 batch.save_csv("out/report.csv")
+
+# 按底色筛选（五种底色 + 危险品）
+from lpr import parse_color
+batch.keep_colors({parse_color("危险品"), parse_color("黄色")})
 
 # 视频流：跨帧跟踪，同一辆车只上报一次
 for plate in rec.recognize_video("parking.mp4", stride=10):
@@ -176,16 +198,17 @@ src/lpr/
     ├── security.py     # 安全层：Limits / PrivacyPolicy / 脱敏 / 限流 / 模型校验
     └── logging_setup.py
 tools/benchmark.py      # 基准脚本（量化四项升级收益）
+tools/make_color_samples.py  # 合成六色样张，核对底色判定
 models/                 # 预训练 SVM 模型（原版权重）
 samples/                # 测试样张
-tests/                  # 179 项 pytest 测试
+tests/                  # 232 项 pytest 测试
 docs/UPGRADE.md         # 与原项目的详细对比
 ```
 
 ## 测试与基准
 
 ```bash
-pytest tests/ -q                                    # 179 项单元/集成测试
+pytest tests/ -q                                    # 232 项单元/集成测试
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ```
 
