@@ -76,8 +76,8 @@ class LocateConfig:
 class EngineConfig:
     """引擎选择与运行方式。"""
 
-    #: 默认引擎："cv"（传统）| "deep"（深度学习）
-    default: str = "cv"
+    #: 默认引擎："cv"（传统，快但精度有限）| "deep"（深度学习，推荐）| "cascade"（级联）
+    default: str = "cascade"
     #: 引擎组合模式："single"（只用 default）| "cascade"（先传统，失败再深度）
     mode: str = "single"
     #: 传统 CV 引擎参数
@@ -86,7 +86,7 @@ class EngineConfig:
     use_confidence: bool = True
 
     def validate(self) -> None:
-        if self.default not in ("cv", "deep"):
+        if self.default not in ("cv", "deep", "cascade"):
             raise ValueError(f"未知引擎: {self.default}")
         if self.mode not in ("single", "cascade"):
             raise ValueError(f"未知模式: {self.mode}")
@@ -97,7 +97,7 @@ class EngineConfig:
 class UIConfig:
     """界面相关。"""
 
-    window_title: str = "车牌识别系统 v2"
+    window_title: str = "车牌识别系统 v2.1"
     window_size: tuple[int, int] = (1280, 800)
     #: 摄像头识别间隔（秒），原版固定 2 秒，这里可调
     camera_interval: float = 0.35
@@ -108,11 +108,62 @@ class UIConfig:
 
 
 @dataclass
+class SecurityConfig:
+    """安全与资源限制（对应 ``utils.security.Limits`` / ``PrivacyPolicy``）。"""
+
+    # ---- 输入限制
+    max_file_mb: float = 32.0
+    max_pixels: int = 50_000_000
+    max_side: int = 20_000
+    max_batch_files: int = 5000
+
+    # ---- 隐私
+    #: 输出中是否对车牌号打码
+    mask_output: bool = False
+    #: 打码保留的尾部字符数
+    mask_keep_tail: int = 3
+    #: 日志中是否自动脱敏车牌号（强烈建议 True）
+    mask_logs: bool = True
+    #: 结果中是否保留车牌 ROI 图像
+    keep_roi: bool = True
+
+    # ---- 性能
+    #: 单张识别超时（秒），0 为不限制
+    predict_timeout: float = 30.0
+    #: 每秒最多识别多少次（限流，防止并发打满 CPU）
+    max_qps: float = 20.0
+
+    def to_limits(self):
+        """转成 ``utils.security.Limits``。"""
+        from .utils.security import Limits
+
+        return Limits(
+            max_file_bytes=int(self.max_file_mb * 1024 * 1024),
+            max_pixels=self.max_pixels,
+            max_side=self.max_side,
+            max_batch_files=self.max_batch_files,
+            predict_timeout=self.predict_timeout,
+        )
+
+    def to_privacy(self):
+        """转成 ``utils.security.PrivacyPolicy``。"""
+        from .utils.security import PrivacyPolicy
+
+        return PrivacyPolicy(
+            mask_output=self.mask_output,
+            mask_keep_tail=self.mask_keep_tail,
+            mask_logs=self.mask_logs,
+            keep_roi=self.keep_roi,
+        )
+
+
+@dataclass
 class Config:
     """顶层配置。"""
 
     engine: EngineConfig = field(default_factory=EngineConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
     #: 日志级别
     log_level: str = "INFO"
 
@@ -130,6 +181,7 @@ class Config:
                 raw = json.load(fp)
             _apply_overrides(cfg.engine, raw.get("engine", {}))
             _apply_overrides(cfg.ui, raw.get("ui", {}))
+            _apply_overrides(cfg.security, raw.get("security", {}))
             if "log_level" in raw:
                 cfg.log_level = str(raw["log_level"])
 
@@ -138,8 +190,11 @@ class Config:
             cfg.engine.default = env_engine
         if env_level := os.getenv("LPR_LOG_LEVEL"):
             cfg.log_level = env_level
+        if os.getenv("LPR_MASK_OUTPUT", "").lower() in ("1", "true", "yes"):
+            cfg.security.mask_output = True
 
         cfg.engine.validate()
+        cfg.security.to_limits().validate()
         return cfg
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -148,6 +203,7 @@ class Config:
         payload = {
             "engine": _to_plain(self.engine),
             "ui": _to_plain(self.ui),
+            "security": _to_plain(self.security),
             "log_level": self.log_level,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +256,7 @@ __all__ = [
     "EngineConfig",
     "LocateConfig",
     "UIConfig",
+    "SecurityConfig",
     "PROJECT_ROOT",
     "MODELS_DIR",
     "DEFAULT_CONFIG_PATH",

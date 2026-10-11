@@ -1,15 +1,54 @@
 {
   "engine": {
-    "default": "cv",
+    "default": "cascade",
     "mode": "single",
     "locate": {
       "max_side": 1200,
-      "blur_kernel": 3
-    }
+      "blur_kernel": 3,
+      "open_kernel_ratio": 0.02,
+      "morph_kernel_ratio": [
+        0.005,
+        0.021
+      ],
+      "canny_low": 100,
+      "canny_high": 200,
+      "min_area_ratio": 0.0015,
+      "min_aspect": 2.0,
+      "max_aspect": 5.5,
+      "color_ratio": 0.5,
+      "color_row_ratio": 0.8,
+      "color_row_ratio_green": 0.5,
+      "box_padding": 5,
+      "min_chars": 6,
+      "max_candidates": 5
+    },
+    "use_confidence": true
   },
   "ui": {
-    "window_title": "车牌识别系统 v2",
-    "camera_interval": 0.35
+    "window_title": "车牌识别系统 v2.1",
+    "window_size": [
+      1280,
+      800
+    ],
+    "camera_interval": 0.35,
+    "camera_resolution": [
+      1280,
+      720
+    ],
+    "theme": "light",
+    "max_history": 200
+  },
+  "security": {
+    "max_file_mb": 32.0,
+    "max_pixels": 50000000,
+    "max_side": 20000,
+    "max_batch_files": 5000,
+    "mask_output": false,
+    "mask_keep_tail": 3,
+    "mask_logs": true,
+    "keep_roi": true,
+    "predict_timeout": 30.0,
+    "max_qps": 20.0
   },
   "log_level": "INFO"
 }

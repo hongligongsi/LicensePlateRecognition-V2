@@ -17,6 +17,7 @@ venv/
 # 运行产物
 annotated/
 output/
+out/
 *.log
 
 # IDE
