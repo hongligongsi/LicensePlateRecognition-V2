@@ -255,3 +255,118 @@ class TestColorRegression:
     def test_green_covers_aviation(self):
         # 民航牌为绿底白字，落在 GREEN 底色下
         assert PlateColor.GREEN.label == "绿牌（新能源）"
+
+
+# ---------------------------------------------------------------- 双层牌边框鲁棒性
+# 参考实现 YOLO26-plate 用固定比例切分（5/12、1/3）绕开"边框桥接"问题。
+# 我们改用"裁左右边框 + 投影"，下面这些用例锁定该行为的正确性。
+
+
+class TestDoubleLineWithFrame:
+    """车牌四周的框线会把两行字符的投影桥接成一段 —— 必须能正确切分。"""
+
+    @staticmethod
+    def _framed(w: int, h: int, rows: int) -> np.ndarray:
+        img = np.full((h, w, 3), 200, np.uint8)
+        cv2.rectangle(img, (3, 3), (w - 4, h - 4), (0, 0, 0), 3)  # 外框
+        if rows == 1:
+            for i in range(7):
+                x = int(w * 0.08 + i * w * 0.125)
+                cv2.rectangle(
+                    img, (x, int(h * 0.25)), (x + int(w * 0.09), int(h * 0.78)), (0, 0, 0), -1
+                )
+        else:
+            for i in range(4):
+                x = int(w * 0.22 + i * w * 0.16)
+                cv2.rectangle(
+                    img, (x, int(h * 0.10)), (x + int(w * 0.11), int(h * 0.42)), (0, 0, 0), -1
+                )
+            for i in range(6):
+                x = int(w * 0.07 + i * w * 0.15)
+                cv2.rectangle(
+                    img, (x, int(h * 0.58)), (x + int(w * 0.10), int(h * 0.90)), (0, 0, 0), -1
+                )
+        return img
+
+    def test_framed_double_splits(self):
+        """带外框的双行牌必须能切出两行（框线桥接曾导致切不出来）。"""
+        pair = split_double_line(self._framed(440, 220, 2))
+        assert pair is not None, "带框双行牌未被识别为双层"
+
+    def test_framed_single_does_not_split(self):
+        """带外框的单行牌不能被误拆。"""
+        assert split_double_line(self._framed(440, 140, 1)) is None
+
+    def test_framed_layouts(self):
+        assert measure_layout(self._framed(440, 220, 2)) == "double"
+        assert measure_layout(self._framed(440, 140, 1)) == "single"
+
+    def test_stacked_output_height_normalized(self):
+        """拼接后两行高度必须统一（否则矮行被拉伸变形）。"""
+        from lpr.engines.deep_engine import _to_single_line
+
+        layouts = _to_single_line(self._framed(440, 220, 2))
+        assert len(layouts) == 2
+        stacked = layouts[1]
+        assert stacked.shape[0] > 0 and stacked.shape[1] > 0
+
+    def test_border_trim_does_not_break_unframed(self):
+        """无边框双行牌同样能切分（裁边框逻辑不能让正常情形失效）。"""
+        assert split_double_line(self._framed(440, 220, 2)) is not None
+
+    def test_unbalanced_bands_rejected(self):
+        """上薄下厚（单行牌上方装饰条）不应判为双层。"""
+        img = np.full((220, 440, 3), 200, np.uint8)
+        # 上：极薄的装饰条（2px 高）；下：正常字符行
+        cv2.rectangle(img, (20, 20), (420, 24), (0, 0, 0), -1)
+        for i in range(6):
+            x = int(440 * 0.07 + i * 440 * 0.15)
+            cv2.rectangle(img, (x, 100), (x + 30, 190), (0, 0, 0), -1)
+        assert split_double_line(img) is None
+
+
+class TestResultFieldIntegrity:
+    """识别结果的字段类型完整性。
+
+    曾经踩坑：`_recognize_candidates` 里内层循环变量 `layout` 覆盖了
+    外层的 `layout` 枚举，导致 `PlateResult.layout` 被塞进一个 ndarray，
+    直到写报告时才在 `to_dict()` 处炸掉 —— 而且**只在有识别结果时**才炸。
+    这类变量遮蔽必须在单元层面拦住。
+    """
+
+    def test_layout_is_enum_on_engine_output(self):
+        """引擎产出的每个结果，layout 必须是 PlateLayout 枚举。"""
+        import pytest
+
+        pytest.importorskip("rapidocr_onnxruntime")
+
+        from lpr.config import EngineConfig
+        from lpr.engines.deep_engine import DeepEngine
+        from lpr.utils.image import imread
+        import glob
+
+        eng = DeepEngine(EngineConfig())
+        try:
+            eng.load()
+        except Exception:
+            pytest.skip("深度学习引擎不可用")
+
+        samples = sorted(glob.glob("img/*.png")) + sorted(glob.glob("img/*.jpg"))
+        if not samples:
+            pytest.skip("缺少样张")
+
+        checked = 0
+        for path in samples[:4]:
+            img = imread(path)
+            if img is None:
+                continue
+            for r in eng.predict(img):
+                assert isinstance(r.layout, PlateLayout), (
+                    f"{path}: layout 类型错误 {type(r.layout)}"
+                )
+                assert r.layout in tuple(PlateLayout)
+                # to_dict 必须可序列化（这正是当初炸掉的地方）
+                d = r.to_dict()
+                assert isinstance(d["layout"], str)
+                checked += 1
+        assert checked > 0, "没有任何识别结果可供校验"

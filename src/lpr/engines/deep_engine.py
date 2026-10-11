@@ -82,6 +82,20 @@ _EARLY_STOP_SCORE = 0.6
 #: 取 2.35 作为上限：再宽就不可能是双行牌，那两段"行带"是边框而非两行字符。
 _DOUBLE_MAX_ASPECT = 2.35
 
+#: 计算行投影时左右各裁掉的比例（去掉车牌竖直边框线）。
+#: 不裁的话，框线会在每一行都贡献前景像素，把上下两行字符桥接成一段。
+_BORDER_TRIM = 0.08
+
+#: 行带桥接容忍比例：宽度小于该比例的空白视为噪声填掉
+_BAND_BRIDGE_RATIO = 0.012
+
+#: 单行牌防线：某段行带高度占比超过该值 → 判定为单行字符，不拆
+_SINGLE_BAND_RATIO = 0.50
+
+#: 双行牌两行行带的高度相似度下限（min/max）。
+#: 真实双行牌上下行字号一致；上薄下厚多半是单行牌上方的装饰条。
+_BAND_HEIGHT_SIMILARITY = 0.55
+
 
 def _probe_rapidocr() -> tuple[bool, str]:
     try:
@@ -109,12 +123,15 @@ def _clean_text(text: str) -> str:
 
 
 def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
-    """把可能是「双行牌 / 竖排牌」的候选区展开成单行形态。
+    """把「双层（双行）牌」展开成单行形态。
 
-    商用车前后牌、摩托车牌是上短下长（或上长下短）的两行排布，
-    而识别网络按单行文本训练，直接整块送入会读成两段并丢失关联。
-    这里按水平投影找出行间空白，把两行拆开后横向拼接成单行，
-    若无法可靠拆分则原样返回（由调用方按原图走一次）。
+    双行牌是上短下长的两行排布（如大型汽车后号牌：上行 4 字、下行 6 字），
+    而识别网络按单行文本训练，直接整块送入会把两段读成互不相关的文本。
+    这里把两行拆开后横向拼接成单行，让识别网络当作一行 10 字来处理。
+
+    拼接口径（与参考实现 YOLO26-plate 的 ``get_split_merge`` 一致）：
+    两行**先统一到同一高度再并排**，这样字符大小一致、符合识别网络的
+    训练分布。若直接按原尺寸拼接，行高较矮的那行会被严重拉伸。
 
     返回值的第一项恒为原图，第二项（若存在）为拼接后的单行图。
     判断"是否为双层"请用 :func:`split_double_line`，不要靠本函数的长度。
@@ -125,7 +142,7 @@ def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
         return [roi]
 
     top, bottom = pair
-    # 横向拼接：高度对齐到两者较大值，宽度累加
+    # 统一行高：取两行中较高的那个作为目标高度
     target_h = max(top.shape[0], bottom.shape[0])
 
     def _fit_height(band: np.ndarray) -> np.ndarray:
@@ -134,21 +151,94 @@ def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
         return cv2.resize(band, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
     stacked = np.hstack([_fit_height(top), _fit_height(bottom)])
+    # 拼接后高宽比若已达单行牌特征（≥2.5:1），说明两行都是有效字符行
     return [roi, stacked]
+
+
+def _band_profile(roi: np.ndarray) -> np.ndarray:
+    """算出行方向的前景像素投影，用于定位字符行带。
+
+    关键细节：**先裁掉左右各 8% 的边框**。车牌四周有 1~2px 的白色/黑色
+    框线，它在每一行都会贡献前景像素，会把上下两行字符"桥接"成一段连续
+    行带，导致永远切不出两段。
+
+    （参考实现 we0091234/YOLO26-plate 直接按固定比例 5/12、1/3 切分来
+    绕开这个问题；我们改成"裁边框 + 投影"的通用做法，不依赖固定比例，
+    对各种宽高比的输入都成立。）
+    """
+    h, w = roi.shape[:2]
+    margin = int(round(w * _BORDER_TRIM))
+    if w - 2 * margin >= 0.4 * w:
+        core = roi[:, margin : w - margin]
+    else:
+        core = roi
+
+    gray = cv2.cvtColor(core, cv2.COLOR_BGR2GRAY) if core.ndim == 3 else core
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    return (binary > 0).sum(axis=1)
+
+
+def _find_bands(profile: np.ndarray, h: int, width: int) -> list[tuple[int, int]]:
+    """从投影里找出字符行带，并容忍被边框桥接的小缺口。
+
+    单行牌字符高度可达车牌高度的 60% 以上，若某段行带占比超过
+    ``_SINGLE_BAND_RATIO``，说明它已经是一整行字符（或两行被桥接在一起），
+    此时不再往下切。这是"带边框单行牌被误拆"的最后一道防线。
+    """
+    if profile.size == 0 or profile.max() <= 0:
+        return []
+
+    active = profile > max(1, int(0.02 * width))
+    # 桥接：把宽度小于 min_gap 的空白当噪声填掉（框线的抗锯齿/断开）
+    min_gap = max(1, int(round(h * _BAND_BRIDGE_RATIO)))
+    filled = active.copy()
+    idx = 0
+    n = len(active)
+    while idx < n:
+        if not active[idx]:
+            run = idx
+            while run < n and not active[run]:
+                run += 1
+            if idx > 0 and run < n and (run - idx) <= min_gap:
+                filled[idx:run] = True
+            idx = run
+        else:
+            idx += 1
+
+    bands: list[tuple[int, int]] = []
+    start = None
+    for i, flag in enumerate(filled):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            if i - start >= max(2, int(0.06 * h)):
+                bands.append((start, i))
+            start = None
+    if start is not None and len(filled) - start >= max(2, int(0.06 * h)):
+        bands.append((start, len(filled)))
+
+    # 单行牌防线：占比过大的行带说明是单行字符，不拆
+    result = []
+    for band in bands:
+        if (band[1] - band[0]) > h * _SINGLE_BAND_RATIO:
+            return []
+        result.append(band)
+    return result
 
 
 def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     """判断候选区是否是「双层（双行）」车牌，是则返回上下两条行带。
 
-    判据有两条，**全部**满足才算双层：
+    判据有三条，**全部**满足才算双层：
 
-    1. 水平投影上恰好存在 2 段字符行带，且中间有真实空白间隔；
-    2. 整块区域的高度明显偏大 —— 双行牌（440x220mm）的宽高比只有约 2:1，
-       而单行牌（440x140mm）是约 3.1:1。若宽高比仍大于 ``_DOUBLE_MAX_ASPECT``，
-       说明那两段"行带"更可能是单行牌被上下装饰条切出来的，不该判为双层。
+    1. 裁掉左右边框后，水平投影上恰好存在 2 段字符行带，且中间有空白间隔；
+    2. 两段行带的**高度相近**（真实双行牌上下两行字号一致；若上薄下厚，
+       多半是单行牌上方的装饰条被切出来了）；
+    3. 整块区域的宽高比 ≤ ``_DOUBLE_MAX_ASPECT`` —— 双行牌 440x220mm 约 2:1，
+       单行牌 440x140mm 约 3.1:1。宽高比过大的不可能是双行牌。
 
-    第 2 条很关键：早期只按行带数量判断时，一个带上下边框的单行牌会被
-    误判成双层，进而被拆开拼接成乱码。
+    这三条缺一不可：早期只按行带数量判断时，带上下边框的单行牌会被误判成
+    双层并拆成乱码；而只看投影又会因为边框桥接而永远切不出两段。
 
     Returns:
         ``(上行, 下行)`` 图块，或 ``None``（不是双层牌）。
@@ -161,32 +251,20 @@ def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     if w / max(1, h) > _DOUBLE_MAX_ASPECT:
         return None
 
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
-    # 二值化后统计每一行的前景像素数，找出字符所在的行带
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    profile = (binary > 0).sum(axis=1)
-    if profile.max() <= 0:
-        return None
-
-    active = profile > max(1, int(0.02 * w))
-    # 找出连续的前景行段
-    bands: list[tuple[int, int]] = []
-    start = None
-    for idx, flag in enumerate(active):
-        if flag and start is None:
-            start = idx
-        elif not flag and start is not None:
-            if idx - start >= max(2, int(0.06 * h)):
-                bands.append((start, idx))
-            start = None
-    if start is not None and len(active) - start >= max(2, int(0.06 * h)):
-        bands.append((start, len(active)))
-
-    # 只有恰好两段、且中间有真实空白时才视为双行
+    profile = _band_profile(roi)
+    bands = _find_bands(profile, h, w)
     if len(bands) != 2:
         return None
+
     gap = bands[1][0] - bands[0][1]
     if gap < max(1, int(0.02 * h)):
+        return None
+
+    # 行带高度相近性检查：双行牌两行字号一致
+    h0 = bands[0][1] - bands[0][0]
+    h1 = bands[1][1] - bands[1][0]
+    ratio = min(h0, h1) / max(1, max(h0, h1))
+    if ratio < _BAND_HEIGHT_SIMILARITY:
         return None
 
     top = roi[bands[0][0]:bands[0][1], :]
@@ -454,13 +532,18 @@ class DeepEngine(BaseEngine):
             votes: dict[str, float] = {}
             rounds = 0
             plan = [(up, sh) for up in _UPSCALE_STEPS for sh in _SHARPEN_LEVELS]
-            # 双行牌展开形态（单行牌时与原图相同，由去重逻辑合并）
-            layouts = _to_single_line(roi)
+            # 双行牌展开形态。
+            # 借鉴参考实现 YOLO26-plate 的思路：**先在检测/定位阶段判定
+            # 单层还是双层**，而不是对每个候选无脑尝试拆分。
+            # 这里用 measure_layout 做等价判定——只有确实是双层的候选
+            # 才生成拼接形态，单行牌只走原图，避免两倍无效识别开销。
+            layout = PlateLayout(measure_layout(roi))
+            variants = _to_single_line(roi) if layout is PlateLayout.DOUBLE else [roi]
 
             for up, sharp in plan:
                 rounds += 1
-                for layout in layouts:
-                    prepared = _sharpen(_upscale(layout, up), sharp)
+                for variant in variants:
+                    prepared = _sharpen(_upscale(variant, up), sharp)
 
                     for text, score in self._recognize_only(prepared):
                         cleaned = _clean_text(text)
@@ -498,7 +581,7 @@ class DeepEngine(BaseEngine):
             if measured is not PlateColor.UNKNOWN:
                 color = measured
 
-            layout = PlateLayout(measure_layout(roi))
+            # layout 已在候选阶段算好（见上方 measure_layout 调用）
 
             confidence = float(np.clip(0.5 * plate_score(corrected) + 0.4 * share + 0.1, 0, 1))
 
@@ -519,6 +602,7 @@ class DeepEngine(BaseEngine):
                         "variants": sorted(votes.items(), key=lambda kv: -kv[1])[:3],
                         "corrections": changes,
                         "aspect": round(roi.shape[1] / max(1, roi.shape[0]), 2),
+                        "split_double": layout is PlateLayout.DOUBLE,
                     },
                 )
             )

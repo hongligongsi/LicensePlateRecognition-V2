@@ -46,7 +46,7 @@ from .utils.security import (
 )
 
 PROG = "lpr"
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 
 
 def _make_parser() -> argparse.ArgumentParser:
