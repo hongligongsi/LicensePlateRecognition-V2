@@ -60,46 +60,116 @@ logger = get_logger("ui.window")
 
 #: 颜色标签 → UI 颜色（RGB hex）
 _LABEL_HEX = {
-    PlateColor.BLACK.value: "#444444",
+    PlateColor.BLACK.value: "#3d4451",
     PlateColor.BLUE.value: "#1e6fd9",
-    PlateColor.GREEN.value: "#2e8b57",
-    PlateColor.WHITE.value: "#888888",
-    PlateColor.YELLOW.value: "#e6a700",
-    PlateColor.HAZMAT.value: "#c0392b",
-    PlateColor.UNKNOWN.value: "#999999",
+    PlateColor.GREEN.value: "#1f9d6b",
+    PlateColor.WHITE.value: "#6b7688",
+    PlateColor.YELLOW.value: "#d99a06",
+    PlateColor.HAZMAT.value: "#d64545",
+    PlateColor.UNKNOWN.value: "#8a93a3",
 }
 
-_QSS = """
-QMainWindow { background: #f5f6f8; }
-QGroupBox {
-    font-weight: 600; border: 1px solid #d8dce3; border-radius: 8px;
-    margin-top: 12px; background: #ffffff; padding-top: 6px;
+# 设计令牌：整套界面只用这几个颜色/圆角，改主题只动这里
+_T = {
+    "bg": "#eef1f6",  # 窗口底色
+    "surface": "#ffffff",  # 卡片
+    "border": "#e2e7ef",  # 卡片描边
+    "text": "#1f2733",  # 正文
+    "muted": "#7b8499",  # 次要文字
+    "accent": "#2f6bed",  # 主色
+    "accent_hover": "#245fcf",
+    "danger": "#e5484d",
 }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #33415c; }
-QPushButton {
-    background: #2f6fed; color: white; border: none; border-radius: 6px;
-    padding: 8px 16px; font-size: 13px;
-}
-QPushButton:hover { background: #2559c4; }
-QPushButton:disabled { background: #b9c4d6; }
-QPushButton#secondary { background: #eef1f6; color: #33415c; border: 1px solid #d8dce3; }
-QPushButton#danger { background: #e5484d; }
-QComboBox {
-    border: 1px solid #d8dce3; border-radius: 6px; padding: 6px 10px; background: white;
-}
-QTableWidget {
-    border: 1px solid #d8dce3; border-radius: 6px; background: white;
-    gridline-color: #eef1f6; selection-background-color: #dce7ff;
-}
-QHeaderView::section {
-    background: #f0f2f6; border: none; padding: 6px; font-weight: 600;
-}
-QLabel#imageArea {
-    border: 1px dashed #c4cbd6; border-radius: 8px; background: #ffffff; color: #8a93a3;
-}
-QLabel#resultCard {
-    background: #ffffff; border: 1px solid #d8dce3; border-radius: 8px;
-}
+
+_QSS = f"""
+QMainWindow, QMenuBar {{ background: {_T["bg"]}; }}
+QMenuBar {{ padding: 2px 8px; }}
+QMenuBar::item {{ padding: 4px 10px; border-radius: 5px; color: {_T["text"]}; }}
+QMenuBar::item:selected {{ background: #dfe5ee; }}
+QMenu {{ background: white; border: 1px solid {_T["border"]}; border-radius: 8px; padding: 4px; }}
+QMenu::item {{ padding: 6px 24px; border-radius: 5px; }}
+QMenu::item:selected {{ background: {_T["accent"]}; color: white; }}
+
+QGroupBox {{
+    font-weight: 600; font-size: 13px;
+    border: 1px solid {_T["border"]}; border-radius: 10px;
+    margin-top: 14px; background: {_T["surface"]}; padding: 8px 10px 10px 10px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin; left: 14px; padding: 0 6px;
+    color: {_T["muted"]};
+}}
+
+QPushButton {{
+    background: {_T["accent"]}; color: white; border: none; border-radius: 8px;
+    padding: 0 18px; min-height: 32px; font-size: 13px; font-weight: 500;
+}}
+QPushButton:hover {{ background: {_T["accent_hover"]}; }}
+QPushButton:pressed {{ background: #1d4fae; }}
+QPushButton:disabled {{ background: #c3ccda; }}
+QPushButton#secondary {{
+    background: white; color: {_T["text"]}; border: 1px solid #cdd5e1;
+}}
+QPushButton#secondary:hover {{ background: #f2f5fa; border-color: {_T["accent"]}; }}
+QPushButton#secondary:pressed {{ background: #e6ecf5; }}
+QPushButton#danger {{ background: {_T["danger"]}; }}
+QPushButton#danger:hover {{ background: #c93a3f; }}
+
+QComboBox {{
+    border: 1px solid #cdd5e1; border-radius: 8px; padding: 0 10px;
+    min-height: 32px; background: white; color: {_T["text"]};
+}}
+QComboBox:hover {{ border-color: {_T["accent"]}; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox QAbstractItemView {{
+    background: white; border: 1px solid {_T["border"]}; border-radius: 8px;
+    selection-background-color: #e3ecff; selection-color: {_T["text"]};
+    outline: none; padding: 4px;
+}}
+
+QTableWidget {{
+    border: none; background: {_T["surface"]};
+    gridline-color: #eef1f6; selection-background-color: #e3ecff;
+    selection-color: {_T["text"]}; alternate-background-color: #f8fafd;
+}}
+QHeaderView::section {{
+    background: #f4f6fa; color: {_T["muted"]}; border: none;
+    border-bottom: 1px solid {_T["border"]}; padding: 7px 6px; font-weight: 600;
+}}
+QTableCornerButton::section {{ background: #f4f6fa; border: none; }}
+
+QLabel#imageArea {{
+    border: 2px dashed #c9d2e0; border-radius: 12px; background: #fbfcfe;
+    color: {_T["muted"]}; font-size: 14px;
+}}
+QLabel#plateCard {{
+    background: #242b38; border-radius: 10px;
+}}
+QLabel#colorBadge {{
+    border-radius: 10px; font-weight: 600; font-size: 15px;
+}}
+QLabel#metaLabel {{ color: {_T["muted"]}; font-size: 12px; }}
+QLabel#hintLabel {{ color: {_T["muted"]}; font-size: 12px; }}
+
+QProgressBar {{
+    background: #e3e8f0; border: none; border-radius: 7px;
+    min-height: 14px; max-height: 14px; text-align: center;
+    color: transparent; font-size: 9px;
+}}
+QProgressBar::chunk {{ background: {_T["accent"]}; border-radius: 7px; }}
+
+QScrollBar:vertical {{ background: transparent; width: 9px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: #c9d1de; border-radius: 4px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: #aab5c6; }}
+QScrollBar:horizontal {{ background: transparent; height: 9px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: #c9d1de; border-radius: 4px; min-width: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+
+QSplitter::handle {{ background: {_T["bg"]}; width: 10px; }}
+QToolTip {{
+    background: #2b3342; color: white; border: none; border-radius: 6px; padding: 6px 10px;
+}}
 """
 
 
@@ -189,21 +259,15 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         root.addWidget(splitter)
 
-        # ---------- 左侧：图像显示 ----------
+        # ---------- 左侧：工具条 + 图像显示 ----------
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
 
-        self.image_label = QLabel("打开图片或启动摄像头\n（Ctrl+O）")
-        self.image_label.setObjectName("imageArea")
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setMinimumSize(560, 420)
-        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.image_label.setScaledContents(False)
-        left_layout.addWidget(self.image_label, 1)
-
-        # 顶部工具条
+        # 顶部工具条（操作在画面上方，符合自上而下的使用顺序）
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
         self.btn_open = QPushButton("打开图片")
         self.btn_open.clicked.connect(self.on_open_images)
         self.btn_batch = QPushButton("批量识别文件夹")
@@ -215,10 +279,13 @@ class MainWindow(QMainWindow):
         # 多摄像头机器上索引 0 未必是用户想要的那个；默认探测一遍填进来
         self.camera_combo = QComboBox()
         self.camera_combo.setToolTip("要使用的摄像头索引（启动前自动探测）")
+        camera_caption = QLabel("摄像头")
+        camera_caption.setStyleSheet(f"color:{_T['muted']};")
         toolbar.addWidget(self.btn_open)
         toolbar.addWidget(self.btn_batch)
         toolbar.addWidget(self.btn_camera)
-        toolbar.addWidget(QLabel("摄像头："))
+        toolbar.addSpacing(6)
+        toolbar.addWidget(camera_caption)
         toolbar.addWidget(self.camera_combo)
         toolbar.addStretch(1)
         self.progress = QProgressBar()
@@ -226,6 +293,14 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
         toolbar.addWidget(self.progress)
         left_layout.addLayout(toolbar)
+
+        self.image_label = QLabel("打开图片或启动摄像头\n（Ctrl+O）")
+        self.image_label.setObjectName("imageArea")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumSize(560, 420)
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.image_label.setScaledContents(False)
+        left_layout.addWidget(self.image_label, 1)
 
         splitter.addWidget(left)
 
@@ -242,8 +317,8 @@ class MainWindow(QMainWindow):
         self.engine_combo.currentIndexChanged.connect(self.on_engine_changed)
         self.engine_hint = QLabel("")
         self.engine_hint.setWordWrap(True)
-        self.engine_hint.setStyleSheet("color:#8a93a3; font-size:12px;")
-        engine_layout.addWidget(QLabel("引擎："), 0, 0)
+        self.engine_hint.setObjectName("hintLabel")
+        engine_layout.addWidget(QLabel("引擎"), 0, 0)
         engine_layout.addWidget(self.engine_combo, 0, 1)
         engine_layout.addWidget(self.engine_hint, 1, 0, 1, 2)
         right_layout.addWidget(engine_box)
@@ -251,28 +326,33 @@ class MainWindow(QMainWindow):
         # 识别结果
         result_box = QGroupBox("识别结果")
         result_layout = QGridLayout(result_box)
+        result_layout.setSpacing(10)
 
+        # 车牌号放在深色展示卡上（白底大字刺眼，深底上各牌色都清楚）
         self.plate_label = QLabel("—")
+        self.plate_label.setObjectName("plateCard")
         plate_font = QFont()
-        plate_font.setPointSize(22)
+        plate_font.setPointSize(24)
         plate_font.setBold(True)
+        plate_font.setLetterSpacing(QFont.AbsoluteSpacing, 4.0)
         self.plate_label.setFont(plate_font)
         self.plate_label.setAlignment(Qt.AlignCenter)
-        self.plate_label.setMinimumHeight(56)
+        self.plate_label.setMinimumHeight(64)
+        self.plate_label.setStyleSheet(f"color:{_LABEL_HEX[PlateColor.BLUE.value]};")
 
         self.roi_label = QLabel()
         self.roi_label.setAlignment(Qt.AlignCenter)
-        self.roi_label.setMinimumSize(240, 84)
-        self.roi_label.setStyleSheet("background:#f0f2f6; border-radius:4px;")
+        self.roi_label.setMinimumSize(240, 88)
+        self.roi_label.setStyleSheet("background:#f4f6fa; border-radius:8px;")
 
         self.meta_label = QLabel("等待识别…")
         self.meta_label.setWordWrap(True)
-        self.meta_label.setStyleSheet("color:#5a6478; font-size:12px;")
+        self.meta_label.setObjectName("metaLabel")
 
         result_layout.addWidget(self.plate_label, 0, 0, 1, 2)
         result_layout.addWidget(self.roi_label, 1, 0)
-        color_card = QLabel()
-        color_card.setObjectName("resultCard")
+        color_card = QLabel("—")
+        color_card.setObjectName("colorBadge")
         color_card.setAlignment(Qt.AlignCenter)
         self.color_card = color_card
         result_layout.addWidget(color_card, 1, 1)
@@ -288,6 +368,9 @@ class MainWindow(QMainWindow):
         self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.history_table.setAlternatingRowColors(True)
+        self.history_table.setShowGrid(False)
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.verticalHeader().setDefaultSectionSize(30)
         self.history_table.setMaximumHeight(220)
         history_layout.addWidget(self.history_table)
 
@@ -311,6 +394,13 @@ class MainWindow(QMainWindow):
         self.log_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.log_view.verticalHeader().setVisible(False)
         self.log_view.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.log_view.setShowGrid(False)
+        self.log_view.setAlternatingRowColors(True)
+        self.log_view.verticalHeader().setDefaultSectionSize(26)
+        log_font = QFont("Consolas")
+        log_font.setStyleHint(QFont.Monospace)
+        log_font.setPointSize(9)
+        self.log_view.setFont(log_font)
         self.log_view.setMaximumHeight(160)
         log_layout.addWidget(self.log_view)
         right_layout.addWidget(log_box)
@@ -464,19 +554,23 @@ class MainWindow(QMainWindow):
     def _show_results(self, results: list[PlateResult], elapsed: float, source: str) -> None:
         if not results:
             self.plate_label.setText("未识别到车牌")
-            self.plate_label.setStyleSheet("color:#b0621;")
-            self.color_card.setText("")
+            self.plate_label.setStyleSheet("color:#e5484d;")  # 深色卡片上红字更醒目
+            self.color_card.setText("—")
             self.meta_label.setText(f"耗时 {elapsed:.0f} ms\n{source}")
             return
 
         best = results[0]
         self.plate_label.setText(best.text)
-        self.plate_label.setStyleSheet(f"color:{_LABEL_HEX.get(best.color.value, '#333333')};")
+        self.plate_label.setStyleSheet(f"color:{_LABEL_HEX.get(best.color.value, '#e8ecf4')};")
         self.color_card.setText(best.color.label)
-        hex_color = _LABEL_HEX.get(best.color.value, "#999999")
+        hex_color = _LABEL_HEX.get(best.color.value, "#8a93a3")
+        # Qt QSS 不支持 #RRGGBBAA 八位写法（会解析失败渲染成怪色），
+        # 半透明底色必须用 rgba() 函数形式
+        r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
         self.color_card.setStyleSheet(
-            f"background:{hex_color}22; border:1px solid {hex_color}; border-radius:6px;"
-            "color:" + hex_color + "; font-weight:600;"
+            f"background:rgba({r}, {g}, {b}, 0.14);"
+            f"border:1px solid rgba({r}, {g}, {b}, 0.55);"
+            f"color:{hex_color};"
         )
 
         if best.roi is not None and best.roi.size:

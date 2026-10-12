@@ -138,7 +138,7 @@ class EngineConfig:
 class UIConfig:
     """界面相关。"""
 
-    window_title: str = "车牌识别系统 v2.3.7"
+    window_title: str = "车牌识别系统 v2.3.8"
     window_size: tuple[int, int] = (1280, 800)
     #: 摄像头识别间隔（秒），原版固定 2 秒，这里可调
     camera_interval: float = 0.35

@@ -39,7 +39,7 @@ from .utils.logging_setup import setup_logging
 from .utils.security import SecurityError, mask_plate, model_info
 
 PROG = "lpr"
-VERSION = "2.3.7"
+VERSION = "2.3.8"
 
 
 def _make_parser() -> argparse.ArgumentParser:

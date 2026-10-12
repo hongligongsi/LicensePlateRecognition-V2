@@ -1,6 +1,8 @@
-# 车牌识别系统 v2.3.7（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.8（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
+
+![界面截图](docs/screenshot.png)
 
 本项目是 [hongligongsi/License-Plate-Recognition](https://github.com/hongligongsi/License-Plate-Recognition) 的现代化升级版。原项目最后一次提交停留在 2021 年，其依赖（Python 3.4 / OpenCV 3.4 / numpy 1.14）在如今的机器上已无法安装。v2 在保留原算法思想的基础上全面重构，详见 [UPGRADE.md](docs/UPGRADE.md)。
 
@@ -18,6 +20,9 @@
 > v2.3.6 把中文提示从 `.bat` 里搬走——cmd 用上一行的「字符数」当字节偏移，
 > 文件里出现汉字就会读错行、把残片当命令执行；启动器改成
 > 「纯 ASCII 引导壳 + Python 打印中文」两层结构。
+> v2.3.7 让「打不开摄像头」的提示变得可行动（自动枚举可用设备 + 排查清单），
+> 并在工具栏新增摄像头选择；v2.3.8 重做了界面视觉（工具条上移、深色车牌
+> 展示卡、颜色徽章修色、表格/滚动条/菜单全面统一）。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
