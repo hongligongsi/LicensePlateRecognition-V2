@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.3.4（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.5（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -12,6 +12,9 @@
 > 与「环境与系统要求」说明，并修掉摄像头后端的跨平台硬编码。
 > v2.3.4 修复角点排序在侧倾 >45° 时把车牌矫正成竖图的缺陷（±89° 全范围
 > 归位），并按 GA 36-2018 /《警车管理规定》核对了三处号牌规范口径。
+> v2.3.5 修掉 `start.bat` 的依赖误判（只查 PySide6，不查 numpy/OpenCV）——
+> 在没有 `.venv` 的机器上会先装 220 MB 再以 `ModuleNotFoundError` 告终；
+> 改为「缺依赖就建项目内 `.venv`」，不污染用户已有解释器。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -133,7 +136,7 @@ lpr predict ./photos/ --engine deep --mask --report out/   # 报告落盘同样�
 | **Python** | **3.10 ~ 3.13，必须 64 位** | `requires-python = ">=3.10"`；CI 覆盖 3.10 / 3.11 / 3.12 / 3.13 |
 | **CPU** | 任意 x86-64 | **不需要 GPU、不需要 CUDA**，推理全程纯 CPU |
 | **内存** | 可用 2 GB 以上 | deep 引擎加载 OCR 模型约占 500 MB |
-| **磁盘** | 约 30 MB | 仓库自带 SVM 模型 8 MB；OCR 模型 13.7 MB 随 wheel 分发 |
+| **磁盘** | 源码约 30 MB；装完依赖约 300 MB | 仓库自带 SVM 模型 8 MB；OCR 模型 13.7 MB 随 wheel 分发；`PySide6-Essentials` 约 100 MB、`rapidocr-onnxruntime` 约 130 MB |
 | **网络** | **只在 `pip install` 时需要** | 装完后从识别到界面**全程离线**（模型都已随包分发） |
 | **摄像头** | 可选 | 只有「摄像头实时识别」功能需要 |
 
@@ -176,13 +179,30 @@ lpr predict ./photos/ --engine deep --mask --report out/   # 报告落盘同样�
 双击 start.bat
 ```
 
-脚本会自动：找 Python（优先 `LPR_PYTHON` 环境变量 → `.venv` → `py -3` → `python`）
-→ 校验是否 ≥ 3.10 → 缺 PySide6 就装 → 启动界面。带参数运行则透传给命令行：
+脚本会自动走四步：
+
+1. **找解释器**：`LPR_PYTHON` 环境变量 → 项目内 `.venv` → `py -3` → `python`；
+2. **校验版本**：低于 3.10 直接报错退出（而不是抛一堆 `ImportError`）；
+3. **补齐依赖**：探测 **numpy / OpenCV / Pillow / PySide6 四项**是否齐全，
+   缺则装 `-e ".[deep,gui]"`（核心库 + 深度引擎 + 界面，约 200 MB，只在首次）；
+4. **启动**：无参数开界面，有参数透传给命令行。
+
+缺依赖时**装进项目内的 `.venv`**，不会往你系统里已有的 Python 塞包；如果那个
+解释器本来就齐全，则直接复用、不重复下载。第二次双击复用 `.venv`，秒开。
+
+参数透传给命令行：
 
 ```bat
 start.bat engines                                :: 查看引擎状态
 start.bat predict car.jpg --engine deep          :: 单图识别
 start.bat --help                                 :: 命令行用法
+```
+
+两个环境变量可覆盖默认行为：
+
+```bat
+set LPR_PYTHON=C:\Python312\python.exe   :: 指定解释器（跳过搜索）
+set LPR_NO_VENV=1                        :: 不建 .venv，直接装进找到的解释器
 ```
 
 **② 装成命令（推荐长期使用）**
@@ -220,7 +240,11 @@ lpr engines                      # 看看当前环境有哪些引擎可用
 | `cv`（基础） | 无（numpy + opencv + Pillow） | 否，`models/*.dat` 随仓库分发 |
 | `deep`（推荐） | `rapidocr-onnxruntime` | 否，模型 13.7 MB 在 wheel 内 |
 | `deep-paddle` | `paddleocr` + `paddlepaddle` | **首次运行会联网下载模型**，离线环境别用 |
-| 图形界面 | `PySide6>=6.5` | 否 |
+| 图形界面 | `PySide6-Essentials>=6.5` | 否 |
+
+> 界面只用到 `QtCore` / `QtGui` / `QtWidgets`，因此依赖 `PySide6-Essentials`
+> 而不是元包 `PySide6`——后者会连带装 `PySide6-Addons`（WebEngine / Charts /
+> Multimedia / 3D 等，约 130 MB），本项目一个都不用。
 
 > **纯离线环境请用 `deep`（RapidOCR）**：它和 `cv` 一样装完即用；
 > `deep-paddle` 首次运行需要联网拉模型。
@@ -382,7 +406,7 @@ tools/
 └── make_regression_baseline.py  # 生成真实样张行为快照基线
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
-start.bat               # Windows 一键启动（找解释器 → 校验版本 → 装 GUI 依赖 → 开界面）
+start.bat               # Windows 一键启动（找解释器 → 校验版本 → 补依赖到 .venv → 开界面）
 tests/                  # 776 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比

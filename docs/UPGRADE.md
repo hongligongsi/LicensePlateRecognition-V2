@@ -1042,3 +1042,124 @@ ANSI 代码页（GBK）解析 UTF-8 字节，中文被拆碎后**当成命令执
   警用第三位 A–D、军队 2012 式/2004 式、危险品后缀变体，以及
   "纯字母数字分支不得吞武警"的顺序守卫；
 * 测试总数 538 → **776**，全部通过；行为基线（11 张真实样张）零变化。
+
+---
+
+# v2.3.5 —— 修 `start.bat` 的依赖误判与环境污染
+
+起因是一份真实的首次启动日志：在一台**只装了官方 CPython 3.13**、
+从未装过本项目依赖的机器上双击 `start.bat`，脚本宣布
+`[2/3] PySide6 missing, installing...`，开始下载 82 MB 的
+`PySide6` wheel。三个问题叠在一起：
+
+## 一、依赖探测不完整：只查了 PySide6（会必然崩溃）
+
+旧实现只跑 `import PySide6` 作为唯一判据。但干净解释器里
+`numpy` / `cv2` / `PIL` **本来就没有**。实测：
+
+```text
+$ python -c "import importlib.util as u; print(u.find_spec('numpy'))"
+None
+$ PYTHONPATH=src python -m lpr --help
+  File ".../src/lpr/api.py", line 28, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+```
+
+于是老脚本的结局是：**先花几分钟装完 220 MB，再在最后一步
+`ModuleNotFoundError: numpy` 崩掉**。检查项与真实依赖集不一致，
+是所有"一键脚本"最常见的失效模式。
+
+修法：探测表达式改为 `import numpy, cv2, PIL, PySide6`，四项缺一不可；
+并且**安装完成后复检一次**——"装成功但装进别的解释器 / 包名写错"
+这类问题不允许静默通过。
+
+## 二、往用户的全局解释器里装包
+
+`.venv` 不存在时，旧脚本回落到 `py -3` / `python`，即用户的**全局**
+Python，然后 `pip install` 直接污染它（本次实测就是
+`C:\Users\hongliwang\AppData\Local\Programs\Python\Python313`）。
+项目自己的 README 并未承诺要改用户的系统环境，这属于越界。
+
+修法：缺依赖时**创建项目内 `.venv`** 并把之后所有命令切到它的解释器
+（创建失败才回落到原解释器，且明确告警）。已有 `.venv` 则直接复用。
+另外保留 `LPR_NO_VENV=1` 作为逃生门，给确实想装进现有环境的人。
+
+顺带一个"不折腾"的设计：**先探测、后建 venv**。如果找到的解释器本来
+就齐全，就直接用它，不为建而建、不重复下载。
+
+## 三、GUI 依赖装的是元包，白下 130 MB
+
+界面只 `import` `QtCore` / `QtGui` / `QtWidgets` 三个模块，全在
+**PySide6-Essentials** 里；而元包 `PySide6` 会连带拉
+`PySide6-Addons`（WebEngine / Charts / Multimedia / 3D…，约 130 MB），
+本项目一个都不用。
+
+修法：`pyproject.toml` 的 `gui` extra 由 `PySide6>=6.5` 改为
+`PySide6-Essentials>=6.5`，`start.bat` 的兜底清单同步。
+（已用合成冒烟测试确认 Essentials 足以 import 整个 `lpr.ui.window`。）
+
+## 四、安装目标改为 `.[deep,gui]`
+
+旧脚本装完 PySide6 就启动，结果是"界面能用、但推荐引擎不可用"。
+`deep`（`rapidocr-onnxruntime` + `onnxruntime`）实测安装后仅占 62 MB，
+是 README 明确标注的**推荐引擎**，一键启动理应交付一个完整可用的程序。
+故首次安装统一为 `pip install -e ".[deep,gui]"`，与 README「四种启动方式 ②」
+保持一致。
+
+## 五、顺带补上：pip 不得继承外部 `PYTHONPATH`
+
+验证过程中真实撞到一次：在带环境注入的 shell 里跑安装，pip 解包时的
+`os.unlink` 被**外部 `sitecustomize.py`**（经 `PYTHONPATH` 注入的策略模块）
+劫持并抛出 `SystemExit: 1`，报错文本与依赖毫无关系：
+
+```text
+pip/_internal/operations/install/wheel.py, in save
+    os.unlink(self.dest_path)
+.../sitecustomize.py, in _safe_remove
+    _try_trash(abs_path)
+SystemExit: 1
+```
+
+这跟本项目无关，但它说明一件该防的事：**安装器进程不该被外部
+`PYTHONPATH` 影响**——路径上任何目录里的 `sitecustomize.py` 都会在 pip
+自己的进程里被 import 并执行。因此 `start.bat` 现在会先存下用户的
+`PYTHONPATH`、清空后才去装依赖，只在最后启动时还原；还原用 `if defined`
+判断，避免空值拼出尾随分号（`sys.path` 里的空条目等价于把当前工作目录
+加进去）。
+
+## 六、验证方式（不靠"看起来对"）
+
+批处理是典型的"改完不跑必出事"，因此分两级验证：
+
+1. **干跑**：把两行 `pip install` 替换成 `echo`，用真实 `cmd` 执行，
+   确认控制流、标签跳转、**`%PY%` 在 `goto` 之后确实切到了新解释器**
+   （日志里 `[3/4] installing into .venv\Scripts\python.exe` 就是证据）、
+   以及装后复检的报错分支；
+2. **从零实跑**：把 `start.bat` + `pyproject.toml` + `README.md` + `src/`
+   复制到一个临时目录（等价于全新检出），在**不带任何依赖、且继承着外部
+   `PYTHONPATH`（shim 在位，最坏情况）** 的环境里完整跑一遍：建 `.venv` →
+   装 `.[deep,gui]` → 复检 → 启动 `engines`。实测 35 秒装完
+   （`Successfully installed ... PySide6-Essentials-6.12.0 ... lpr-v2-2.3.5`），
+   两个引擎均报"可用"。这一跑同时证明了 PYTHONPATH 隔离确实挡住了注入；
+3. **GUI 冒烟**：用只装了 Essentials 的 `.venv` 在 offscreen 下真实构造主窗口，
+   确认窗口标题为 `车牌识别系统 v2.3.5` —— 这是"Essentials 够用、
+   不需要 Addons"的直接证据（不是靠推断）。
+
+同时新增 9 项静态回归（见下），把这些策略钉在测试里，防止回退。
+
+## 七、测试
+
+`tests/test_launch_env.py` 新增 `TestLauncherDependencyPolicy`（9 项）：
+
+* 探测表达式必须覆盖 `numpy` / `cv2` / `PIL`（防退回"只查 PySide6"）；
+* 探测表达式必须是合法且可执行的 Python，在依赖齐全的环境里静默通过、
+  在缺任一模块时非零退出（正反双向对照）；
+* 缺依赖必须建项目内 `.venv`，且存在 `LPR_NO_VENV` 逃生门；
+* 安装后必须复检；
+* `pyproject.toml` 的 extras 与 `start.bat` 的兜底包名必须一致
+  （防止两处各说各话）；
+* 安装步骤必须先保存并清空 `PYTHONPATH`、启动时用 `if defined` 还原，
+  且不得再出现 `PYTHONPATH=%~dp0src;%PYTHONPATH%` 这种空值留分号的写法。
+
+测试总数 776 → **785**，全部通过；行为基线（11 张真实样张）零变化。

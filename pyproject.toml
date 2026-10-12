@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lpr-v2"
-version = "2.3.4"
+version = "2.3.5"
 description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,10 @@ dependencies = [
 deep = ["rapidocr-onnxruntime>=1.2"]
 deep-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.5"]
 # 图形界面
-gui = ["PySide6>=6.5"]
+#: 界面只 import QtCore / QtGui / QtWidgets，全在 Essentials 里。
+#: 直接依赖元包 PySide6 会连带拉 PySide6-Addons（WebEngine / Charts /
+#: Multimedia / 3D…，约 130 MB）——本项目一个都不用，故只装 Essentials。
+gui = ["PySide6-Essentials>=6.5"]
 # 开发（含静态检查）
 dev = [
     "pytest>=7.0",
