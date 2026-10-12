@@ -32,11 +32,15 @@ v2.0 把整张图丢给 RapidOCR，实测 2880x2304 的图耗时 **1.6 秒**；
 
 ## 多尺度投票
 
-同一候选用不同超分倍数跑多次识别，按语法合法性加权投票。
+同一候选用不同超分倍数跑多次识别，按语法合法性加权投票；
+再把所有变体的**原始读数做逐列对齐融合**（ROVER 风格），
+能补回被多数变体稳定丢掉的字符（如细笔画字母 E）。
 得益于单次识别仅 10~50ms，即便跑 3 个尺度也只要 100ms 级别。
 """
+
 from __future__ import annotations
 
+import difflib
 import re
 import time
 from pathlib import Path
@@ -89,8 +93,17 @@ _UPSCALE_STEPS = (3.0, 2.0, 4.0)
 #: 锐化强度
 _SHARPEN_LEVELS = (0.0, 0.8)
 
-#: 早停阈值：语法合法性达到该值即可结束投票
-_EARLY_STOP_SCORE = 0.6
+#: 早停前必须跑满的最少轮数。
+#: 单轮读数缺乏"跨变体一致性"证据——远距离黄牌实测第 1 轮读错、
+#: 第 3 轮（2.0x）才读对，第 1 轮就停等于放弃纠错机会。
+_MIN_STOP_ROUNDS = 2
+
+#: 领手存在弱置信位时继续收集证据的轮数上限（再差也认输，控制耗时）。
+_MAX_WEAK_ROUNDS = 4
+
+#: 融合阶段：插入列字符的采纳权重阈值（相对参考串分数的比例）。
+#: 低于它视为孤证噪声，不补进融合串。
+_FUSED_INSERT_RATIO = 0.5
 
 #: 判定"双层牌"时允许的最大宽高比。
 #: 单行牌 440x140mm（≈3.14:1），双行牌 440x220mm（≈2.0:1）。
@@ -165,9 +178,7 @@ def _extract_plate(cleaned: str) -> str | None:
     return None
 
 
-def _accumulate_char_probs(
-    store: dict[str, list[float]], text: str, probs: list[float]
-) -> None:
+def _accumulate_char_probs(store: dict[str, list[float]], text: str, probs: list[float]) -> None:
     """把一次识别的逐字符置信度并入累积表（逐位取最大值）。"""
     if not text or not probs:
         return
@@ -175,7 +186,7 @@ def _accumulate_char_probs(
     if existing is None or len(existing) != len(probs):
         store[text] = list(probs)
         return
-    store[text] = [max(a, b) for a, b in zip(existing, probs)]
+    store[text] = [max(a, b) for a, b in zip(existing, probs, strict=False)]
 
 
 def _align_char_probs(
@@ -232,6 +243,80 @@ def _clean_text(text: str) -> str:
     return "".join(ch for ch in text if ch not in remove).upper()
 
 
+def _fuse_reads(reads: list[tuple[str, float]]) -> str | None:
+    """把同一候选区的多次 OCR 读数做**逐列对齐融合**（ROVER 风格）。
+
+    多尺度/多预处理变体读的是**同一块车牌**，但整串投票把每次读数当作
+    独立字符串计票，会输给"同一个错读重复多次"——实测远距离黄牌
+    ``京E51619``：5 个变体把细笔画的 E 读丢（``京51619``），仅 1 个变体
+    读对，整串投票永远输。融合把所有读数按字符位置对齐后逐列投票：
+
+    * **多数列**：取加权多数字符（参考串自身也参与投票）；
+    * **插入列**（参考串缺失、其他读数在该位置稳定多出的字符）：
+      权重达到 ``_FUSED_INSERT_RATIO × 参考串分数`` 才补回——
+      既能捞回被丢掉的字母，又不给孤证噪声开门；
+    * **删除列**（参考串有、其他读数没有）：不删——OCR 丢字远比多字
+      常见，且删字交给调用方的 ``_extract_plate`` 闸门兜底。
+
+    Returns:
+        融合串。读数为空返回 ``None``，只有一条读数时原样返回。
+        坏融合（对齐错位、噪声混入）由调用方用 ``_extract_plate`` 滤掉。
+    """
+    if not reads:
+        return None
+    ref, ref_score = max(reads, key=lambda r: (r[1], len(r[0])))
+    if len(reads) == 1:
+        return ref
+
+    # 逐列加权票：cols[i] 是参考串第 i 个字符位置的 {字符: 票重}
+    cols: list[dict[str, float]] = [{ch: ref_score} for ch in ref]
+    # 插入列：ins[pos] 表示"插在参考串位置 pos 之前"的 {字符: 票重}
+    ins: dict[int, dict[str, float]] = {}
+
+    for text, score in reads:
+        if text == ref:
+            continue
+        sm = difflib.SequenceMatcher(a=ref, b=text, autojunk=False)
+        for op, a1, a2, b1, b2 in sm.get_opcodes():
+            if op == "equal":
+                # 与参考串一致：给参考字符追加票重（多数列的"同意票"）
+                for k in range(a2 - a1):
+                    ch = ref[a1 + k]
+                    cols[a1 + k][ch] = cols[a1 + k].get(ch, 0.0) + score
+            elif op == "replace":
+                # 等长部分按列投票；不等长时多出的当插入、缺的当删除
+                n = min(a2 - a1, b2 - b1)
+                for k in range(n):
+                    ch = text[b1 + k]
+                    cols[a1 + k][ch] = cols[a1 + k].get(ch, 0.0) + score
+                if b2 - b1 > n:
+                    bucket = ins.setdefault(a2, {})
+                    for k in range(b1 + n, b2):
+                        bucket[text[k]] = bucket.get(text[k], 0.0) + score
+                # a2-a1 > n 的部分是对方丢字：不投反对票
+            elif op == "insert":
+                bucket = ins.setdefault(a1, {})
+                for k in range(b1, b2):
+                    bucket[text[k]] = bucket.get(text[k], 0.0) + score
+            # delete：对方丢了参考串的字符，OCR 丢字常见，不投反对票
+
+    fused = list(ref)
+
+    # 插入列：权重过阈值才补回（从后往前插，避免下标失效）
+    for pos in sorted(ins, reverse=True):
+        ch, weight = max(ins[pos].items(), key=lambda kv: kv[1])
+        if weight >= _FUSED_INSERT_RATIO * ref_score:
+            fused.insert(pos, ch)
+
+    # 多数列：挑战者总票重明显压过参考字符才替换（保守，防止多数被带偏）
+    for i, tally in enumerate(cols):
+        ch, weight = max(tally.items(), key=lambda kv: kv[1])
+        if ch != ref[i] and weight > tally.get(ref[i], 0.0):
+            fused[i] = ch
+
+    return "".join(fused)
+
+
 def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
     """把「双层（双行）牌」展开成单行形态。
 
@@ -257,7 +342,7 @@ def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
 
     def _fit_height(band: np.ndarray) -> np.ndarray:
         scale = target_h / max(1, band.shape[0])
-        new_w = max(1, int(round(band.shape[1] * scale)))
+        new_w = max(1, round(band.shape[1] * scale))
         return cv2.resize(band, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
     stacked = np.hstack([_fit_height(top), _fit_height(bottom)])
@@ -276,8 +361,8 @@ def _band_profile(roi: np.ndarray) -> np.ndarray:
     绕开这个问题；我们改成"裁边框 + 投影"的通用做法，不依赖固定比例，
     对各种宽高比的输入都成立。）
     """
-    h, w = roi.shape[:2]
-    margin = int(round(w * _BORDER_TRIM))
+    _h, w = roi.shape[:2]
+    margin = round(w * _BORDER_TRIM)
     if w - 2 * margin >= 0.4 * w:
         core = roi[:, margin : w - margin]
     else:
@@ -300,7 +385,7 @@ def _find_bands(profile: np.ndarray, h: int, width: int) -> list[tuple[int, int]
 
     active = profile > max(1, int(0.02 * width))
     # 桥接：把宽度小于 min_gap 的空白当噪声填掉（框线的抗锯齿/断开）
-    min_gap = max(1, int(round(h * _BAND_BRIDGE_RATIO)))
+    min_gap = max(1, round(h * _BAND_BRIDGE_RATIO))
     filled = active.copy()
     idx = 0
     n = len(active)
@@ -378,8 +463,8 @@ def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     if ratio < _BAND_HEIGHT_SIMILARITY:
         return None
 
-    top = roi[bands[0][0]:bands[0][1], :]
-    bottom = roi[bands[1][0]:bands[1][1], :]
+    top = roi[bands[0][0] : bands[0][1], :]
+    bottom = roi[bands[1][0] : bands[1][1], :]
     if top.size == 0 or bottom.size == 0:
         return None
     return top, bottom
@@ -470,12 +555,12 @@ def _upscale(roi: np.ndarray, factor: float) -> np.ndarray:
     if h == 0 or w == 0:
         return roi
 
-    est_char_h = h * 0.62              # 字符高约占车牌高 62%
+    est_char_h = h * 0.62  # 字符高约占车牌高 62%
     ideal = 48.0 / max(1.0, est_char_h)  # 达到 48px 字符高所需的倍数
     factor = float(np.clip((ideal + factor) / 2.0, 1.0, 6.0))
 
     new_w, new_h = max(1, int(w * factor)), max(1, int(h * factor))
-    if new_w * new_h > 2_000_000:      # 内存保护
+    if new_w * new_h > 2_000_000:  # 内存保护
         return roi
     return cv2.resize(roi, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
 
@@ -540,9 +625,8 @@ class DeepEngine(BaseEngine):
 
             # 探测是否支持"跳过检测"的纯识别接口（本项目提速的关键）
             self._recognizer = getattr(self._ocr, "text_recognizer", None)
-            self._rec_only_supported = (
-                self._recognizer is not None
-                and hasattr(self._ocr, "get_boxes_img_without_det")
+            self._rec_only_supported = self._recognizer is not None and hasattr(
+                self._ocr, "get_boxes_img_without_det"
             )
         elif self.backend in ("auto", "paddleocr") and _probe_paddleocr()[0]:
             from paddleocr import PaddleOCR
@@ -615,9 +699,7 @@ class DeepEngine(BaseEngine):
         results.sort(key=lambda r: plate_score(r.text), reverse=True)
         results = _dedupe(results)
 
-        logger.debug(
-            "深度引擎 %.1f ms 命中 %d 个车牌 (%s)", elapsed, len(results), path_used
-        )
+        logger.debug("深度引擎 %.1f ms 命中 %d 个车牌 (%s)", elapsed, len(results), path_used)
         return results
 
     # -------------------------------------------------------------- 候选
@@ -628,7 +710,7 @@ class DeepEngine(BaseEngine):
             return []
 
         h, w = img.shape[:2]
-        if max(h, w) < 200:      # 已经是车牌特写，无需定位
+        if max(h, w) < 200:  # 已经是车牌特写，无需定位
             return []
 
         try:
@@ -656,9 +738,7 @@ class DeepEngine(BaseEngine):
         """
         return [(t, s) for t, s, _ in self._recognize_only_detailed(img)]
 
-    def _recognize_only_detailed(
-        self, img: np.ndarray
-    ) -> list[tuple[str, float, list[float]]]:
+    def _recognize_only_detailed(self, img: np.ndarray) -> list[tuple[str, float, list[float]]]:
         """同 :meth:`_recognize_only`，但额外返回**逐字符置信度**。
 
         逐字符置信度是定位"哪个字认错了"的关键信息：整串 0.95 看着很好，
@@ -723,6 +803,8 @@ class DeepEngine(BaseEngine):
             votes: dict[str, float] = {}
             #: 每个候选串累积的逐字符置信度（多轮识别取逐位最大值）
             char_probs_by_text: dict[str, list[float]] = {}
+            #: 各变体的**原始** OCR 读数（清洗后、未抽取），供逐列融合使用
+            raw_reads: list[tuple[str, float]] = []
             rounds = 0
             plan = [(up, sh) for up in _UPSCALE_STEPS for sh in _SHARPEN_LEVELS]
             # 双行牌展开形态。
@@ -740,6 +822,9 @@ class DeepEngine(BaseEngine):
 
                     for text, score, char_probs in self._recognize_only_detailed(prepared):
                         cleaned = _clean_text(text)
+                        if not cleaned:
+                            continue
+                        raw_reads.append((cleaned, score))
                         candidate = _extract_plate(cleaned)
                         if not candidate:
                             continue
@@ -755,14 +840,50 @@ class DeepEngine(BaseEngine):
                 if votes:
                     leader = max(votes, key=lambda k: votes[k])
                     share = votes[leader] / (sum(votes.values()) or 1.0)
-                    if plate_score(leader) >= _EARLY_STOP_SCORE and share >= 0.5:
-                        logger.debug("候选收敛于 %s（%d/%d 轮）", leader, rounds, len(plan))
-                        break
+                    # 早停三道闸门（全部满足才停）：
+                    #   1. 至少 _MIN_STOP_ROUNDS 轮 —— 单轮读数没有跨变体一致性；
+                    #   2. 领手是 7/8 位合法车牌 —— 6 位"短牌"读数常是丢字后被
+                    #      纠错规则"修"出来的假合法串（实测 京E51619→京S1619），
+                    #      必须跑满计划给正确读数出场机会；
+                    #   3. 票份过半。领手存在弱置信位时继续收集证据（封顶限轮）。
+                    if (
+                        rounds >= _MIN_STOP_ROUNDS
+                        and len(leader) in (7, 8)
+                        and is_valid(leader)
+                        and share >= 0.5
+                    ):
+                        probs = char_probs_by_text.get(leader) or []
+                        if not _weak_positions(probs) or rounds >= _MAX_WEAK_ROUNDS:
+                            logger.debug("候选收敛于 %s（%d/%d 轮）", leader, rounds, len(plan))
+                            break
 
             if not votes:
                 continue
 
+            # ---- 读数融合（ROVER 风格）：跨变体逐列共识
+            # 整串投票会被"同一错读重复多轮"带偏（每轮错读都单独计票）；
+            # 逐列融合把所有变体的读数对齐投票，能补回被稳定丢掉的字符。
+            fused_cand: str | None = None
+            if len(raw_reads) >= 2:
+                fused_text = _fuse_reads(raw_reads)
+                if fused_text:
+                    cand = _extract_plate(fused_text)
+                    if cand:
+                        fused_cand = cand
+                        ref_score = max(s for _, s in raw_reads)
+                        votes[cand] = votes.get(cand, 0.0) + ref_score * (0.5 + plate_score(cand))
+
             winner = max(votes, key=lambda k: votes[k])
+            # 融合共识与整串投票领手不一致时，结构分更高者胜：
+            # 逐列融合代表所有变体的真实共识，优先级高于整串票数。
+            if (
+                fused_cand is not None
+                and fused_cand != winner
+                and plate_score(correct(fused_cand)[0]) > plate_score(correct(winner)[0])
+            ):
+                logger.debug("融合读数 %s 压过投票领手 %s", fused_cand, winner)
+                winner = fused_cand
+
             share = votes[winner] / (sum(votes.values()) or 1.0)
             share = max(share, 1.0 / max(1, len(votes)))
 
@@ -878,8 +999,7 @@ class DeepEngine(BaseEngine):
             if not result:
                 return []
             return [
-                (np.asarray(item[0], np.float32), str(item[1]), float(item[2]))
-                for item in result
+                (np.asarray(item[0], np.float32), str(item[1]), float(item[2])) for item in result
             ]
 
         if self._impl == "paddleocr":
@@ -929,9 +1049,7 @@ class DeepEngine(BaseEngine):
             groups.append(current)
         return groups
 
-    def _group_double_fragments(
-        self, boxes: list[tuple], used: set[int]
-    ) -> list[list[tuple]]:
+    def _group_double_fragments(self, boxes: list[tuple], used: set[int]) -> list[list[tuple]]:
         """识别**上下排布**的双层牌碎片：上行（省份+发牌机关）+ 下行（序号）。
 
         与 :meth:`_group_fragments` 的同行水平拼接不同，双层牌的两个
@@ -1087,9 +1205,10 @@ def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
 
 __all__ = [
     "DeepEngine",
-    "split_double_line",
-    "measure_layout",
-    "_extract_plate",
     "_align_char_probs",
+    "_extract_plate",
+    "_fuse_reads",
     "_weak_positions",
+    "measure_layout",
+    "split_double_line",
 ]
