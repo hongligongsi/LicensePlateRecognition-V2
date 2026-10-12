@@ -1,0 +1,13 @@
+[错误] 未找到 Python 解释器。
+
+  请先安装 Python 3.10 或更高版本（必须是 64 位）：
+    https://www.python.org/downloads/windows/
+  安装时记得勾选 "Add python.exe to PATH"，装完重新双击 start.bat。
+
+  注意：Windows 7 / 8 / 8.1 / XP 无法运行本程序，
+        详见 README.md 的「环境与系统要求」章节。
+
+  这个提示为什么是一个独立的文本文件？
+  start.bat 必须保持纯 ASCII —— cmd.exe 用上一行的「字符数」当字节偏移
+  去定位下一行，文件里出现汉字会让它读错位置、把残片当命令执行。
+  所以中文提示一律放在文本文件里，由 `type` 原样输出。

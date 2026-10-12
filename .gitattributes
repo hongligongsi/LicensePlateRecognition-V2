@@ -2,3 +2,8 @@
 # cmd.exe 对 LF 行尾的容忍度不确定，而 CI 是在 Linux 上做检出再跑测试的。
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# 无 Python 时的兜底提示：由 start.bat 用 `type` 原样输出。
+# 必须是 CRLF —— type 只吐字节，LF 行尾在 cmd 里不会回车，会显示成阶梯状；
+# 同时必须是 UTF-8（配合 start.bat 里的 chcp 65001）。
+tools/no-python.txt text eol=crlf

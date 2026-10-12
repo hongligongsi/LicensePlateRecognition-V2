@@ -1,20 +1,21 @@
 """启动入口与运行环境兼容性的回归测试。
 
-覆盖四件容易"改着改着就退化"的事：
+覆盖五件容易"改着改着就退化"的事：
 
 1. ``python -m lpr`` 入口必须存在且能把参数透传给 CLI；
 2. 摄像头后端不能又变回无条件的 Windows 专有 ``CAP_DSHOW``；
-3. ``start.bat`` 必须是纯 ASCII —— 批处理按系统 ANSI 代码页解析，
-   文件里出现非 ASCII 会把中文拆成乱码甚至**当命令执行**（实测踩过）；
-4. ``start.bat`` 的依赖策略（v2.3.5 修）：探测必须覆盖核心运行库
-   （numpy / OpenCV），缺失时优先建项目内 ``.venv`` —— 老版本只查
-   PySide6，在干净的系统解释器上会先装 ~220 MB 再以
-   ``ModuleNotFoundError: numpy`` 告终，而且把包装进了用户的全局 Python。
+3. ``start.bat`` 必须是**纯 ASCII** —— 见 ``TestWindowsLauncher`` 的说明，
+   这不是风格问题，批处理文件里出现多字节字符会让 cmd 读错行；
+4. ``tools/launcher.py`` 只能依赖标准库，且"缺依赖就建项目内 .venv"这条
+   策略不能被改回去（v2.3.5 修过一次）；
+5. 中文提示必须真的打得出来（v2.3.6 的教训：写得对 ≠ cmd 会照常执行）。
 """
+
 from __future__ import annotations
 
+import ast
+import importlib.util
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+TOOLS = ROOT / "tools"
+LAUNCHER_SRC = (TOOLS / "launcher.py").read_text(encoding="utf-8")
+
+
+def _load_launcher():
+    """按文件路径加载 ``tools/launcher.py``（它不是包的一部分）。"""
+    spec = importlib.util.spec_from_file_location("_lpr_launcher", TOOLS / "launcher.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+LAUNCHER = _load_launcher()
 
 
 def _run(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess[str]:
@@ -91,133 +106,250 @@ class TestCameraBackend:
 
 
 class TestWindowsLauncher:
-    """``start.bat`` 必须能被 cmd 正确解析。"""
+    """``start.bat`` 是一个纯 ASCII 引导壳。
 
-    def test_launcher_exists_and_is_ascii_only(self):
-        bat = ROOT / "start.bat"
-        assert bat.is_file()
-        # 关键护栏：非 ASCII 字节会让 cmd 按 GBK 解析出错行（实测）
-        bat.read_bytes().decode("ascii")
+    v2.3.6 的实测教训：**批处理文件里不能出现汉字。**
 
-    def test_launcher_sets_pythonpath_and_calls_module_entry(self):
-        text = (ROOT / "start.bat").read_text(encoding="ascii")
-        assert "PYTHONPATH=%~dp0src" in text
-        assert "%PY% -m lpr" in text
-        # 无参数时默认开界面
-        assert 'set "ARGS=gui"' in text
-        # 版本过低要明确报错，而不是抛一堆 ImportError
-        assert "3, 10" in text
+    cmd.exe 计算「下一行」的偏移时，拿上一行的**字符数**当**字节偏移**用。
+    文件里只要有一个多字节字符，下一行就会被超前 ``(字节数 - 字符数)`` 个
+    字节开始读。实测一行 20 个汉字的提示，让下一行开头 40 字节被吞掉，
+    剩下的残片被当成命令执行：
 
-    def test_launcher_does_not_use_crlf_hostile_constructs(self):
-        """CRLF 是批处理必需的；这里确认没被误转成 LF。"""
-        raw = (ROOT / "start.bat").read_bytes()
-        assert b"\r\n" in raw
+    .. code-block:: text
 
+               完成 —— CV 引擎、深度引擎、图形界面均已就绪。
+        '，未改动你系统里的' 不是内部或外部命令，也不是可运行的程序。
 
-class TestLauncherDependencyPolicy:
-    """v2.3.5 修掉的坑：依赖探测不完整 + 往用户全局解释器里装包。
-
-    背景（真实复现）：一台只装了官方 CPython 3.13 的机器上，
-    ``import numpy`` / ``import cv2`` 都失败，而老版 start.bat 只检查
-    ``import PySide6``，于是它对用户宣布"GUI dependency OK"，装了
-    220 MB 的 PySide6 元包，然后在最后一步抛
-    ``ModuleNotFoundError: No module named 'numpy'``——
-    包还留在了用户的全局 Python 里。
+    最坑的是它**不稳定**：短文件里超前量常常刚好落在下一行的缩进空格里，
+    看上去一切正常 —— 我们自己的 6 行探针就这么骗过去一次。
     """
 
     @staticmethod
-    def _bat() -> str:
-        return (ROOT / "start.bat").read_text(encoding="ascii")
+    def _raw() -> bytes:
+        return (ROOT / "start.bat").read_bytes()
 
     @staticmethod
-    def _probe_expression() -> str:
-        m = re.search(r'^set "PROBE=(.+)"$', TestLauncherDependencyPolicy._bat(), re.M)
-        assert m, "start.bat 必须定义 PROBE 表达式"
-        return m.group(1)
+    def _text() -> str:
+        return (ROOT / "start.bat").read_bytes().decode("ascii")
+
+    def test_exists_and_is_ascii_only(self):
+        # 一旦这里抛 UnicodeDecodeError，就是上面那段灾难的入口
+        self._raw().decode("ascii")
+
+    def test_has_no_bom(self):
+        """BOM 会被 cmd 当成第一条命令的一部分。"""
+        assert not self._raw().startswith(b"\xef\xbb\xbf")
+
+    def test_keeps_crlf(self):
+        """CRLF 是批处理必需的；这里确认没被误转成 LF。"""
+        raw = self._raw()
+        assert b"\r\n" in raw
+        assert raw.count(b"\n") == raw.count(b"\r\n")
+
+    def test_delegates_all_logic_to_python(self):
+        text = self._text()
+        assert "tools\\launcher.py" in text
+        # 这些逻辑一个都不许长回批处理里（v2.3.6 全部搬进 launcher.py）
+        for moved in ('set "PROBE=', "-m venv", "-m pip", "sys.version_info"):
+            assert moved not in text, f"{moved!r} 应该留在 tools/launcher.py"
+
+    def test_falls_back_to_bundled_notice_without_python(self):
+        text = self._text()
+        # 找不到任何解释器时用 `type` 打印 UTF-8 文本文件：批处理解析器全程
+        # 不接触多字节字符，命令本身仍然是 ASCII
+        assert "tools\\no-python.txt" in text
+        # 控制台代码页 65001 是那个文件能被正确渲染的前提
+        assert "chcp 65001" in text
+
+
+class TestPythonLauncher:
+    """``tools/launcher.py`` —— 中文提示与安装逻辑都住在这里。"""
+
+    def test_imports_stdlib_only(self):
+        """它必须能在"什么第三方包都没装"的解释器上跑起来。
+
+        启动器的职责就是把环境补齐；一旦它 import 了 numpy / cv2 / PySide6，
+        就会在**最需要它工作的那台机器**上 ImportError。
+        """
+        tree = ast.parse(LAUNCHER_SRC)
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+        assert "__future__" in imported  # sanity：AST 确实解析到了导入
+        unknown = imported - set(sys.stdlib_module_names) - {"__future__"}
+        assert not unknown, f"启动器引入了非标准库依赖：{sorted(unknown)}"
+        assert "lpr" not in imported, "启动器不能依赖本项目（它可能还没装上）"
 
     def test_probe_covers_core_runtime_not_only_pyside6(self):
-        expr = self._probe_expression()
-        # 这四项缺一不可；只写 PySide6 就是我们要防的回归
+        # 只查 PySide6 是 v2.3.5 的原始 bug：干净解释器里 numpy/cv2 也没有
         for mod in ("numpy", "cv2", "PIL", "PySide6"):
-            assert mod in expr, f"依赖探测漏了 {mod}"
-        assert "PySide6" in expr and "numpy" in expr
+            assert mod in LAUNCHER.PROBE, f"依赖探测漏了 {mod}"
+        compile(LAUNCHER.PROBE, "<probe>", "exec")  # 会被拼进 -c 参数
 
-    def test_probe_expression_is_runnable_python(self):
-        """PROBE 会被拼进 ``-c`` 参数，语法必须是合法 Python 表达式。"""
-        expr = self._probe_expression()
-        compile(expr, "<probe>", "exec")
-
-    def test_probe_passes_in_a_complete_environment(self):
-        """在依赖齐全的解释器里，探测必须静默通过（返回码 0、无输出）。"""
+    def test_probe_passes_here_and_fails_on_a_missing_module(self, monkeypatch):
         for mod in ("numpy", "cv2", "PIL", "PySide6"):
             pytest.importorskip(mod)
-        proc = subprocess.run(
-            [sys.executable, "-c", self._probe_expression()],
-            capture_output=True,
-            text=True,
-            timeout=120,
+        assert LAUNCHER.probe([sys.executable]) is True
+        monkeypatch.setattr(LAUNCHER, "PROBE", LAUNCHER.PROBE + ", lpr_definitely_absent")
+        assert LAUNCHER.probe([sys.executable]) is False
+
+    def test_probe_is_false_for_a_broken_interpreter(self):
+        """路径不存在也不能抛异常 —— 上层只想知道"能不能用"。"""
+        assert LAUNCHER.probe([str(ROOT / "no" / "such" / "python.exe")]) is False
+
+    def test_version_matches_pyproject_and_cli(self):
+        # 版本号散落在多处，至少让它们互相钉住
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        assert f'version = "{LAUNCHER.VERSION}"' in pyproject
+        assert f'VERSION = "{LAUNCHER.VERSION}"' in (SRC / "lpr" / "cli.py").read_text(
+            encoding="utf-8"
         )
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout == ""
 
-    def test_probe_fails_when_one_dependency_is_absent(self):
-        """反向对照：少一个库就必须非零退出（否则探测形同虚设）。"""
-        expr = self._probe_expression() + ", lpr_definitely_absent_module"
-        proc = subprocess.run(
-            [sys.executable, "-c", expr], capture_output=True, text=True, timeout=120
+    def test_choose_target_reuses_a_complete_interpreter(self, tmp_path):
+        target, action = LAUNCHER.choose_target(["py"], tmp_path, probe_fn=lambda _i: True)
+        assert action == "reuse"
+        assert target == ["py"]
+
+    def test_choose_target_prefers_an_existing_venv(self, tmp_path):
+        vpy = LAUNCHER.venv_python(tmp_path)
+        vpy.parent.mkdir(parents=True)
+        vpy.write_bytes(b"")
+        target, action = LAUNCHER.choose_target(["py"], tmp_path, probe_fn=lambda _i: False)
+        assert action == "use_venv"
+        assert target == [str(vpy)]
+
+    def test_choose_target_creates_a_project_local_venv(self, tmp_path):
+        target, action = LAUNCHER.choose_target(["py"], tmp_path, probe_fn=lambda _i: False)
+        assert action == "create_venv"
+        # 关键：目标是项目内 .venv，绝不是用户已有的那个解释器
+        assert target == [str(LAUNCHER.venv_python(tmp_path))]
+        assert target != ["py"]
+
+    def test_choose_target_honours_the_no_venv_escape_hatch(self, tmp_path):
+        target, action = LAUNCHER.choose_target(
+            ["py"], tmp_path, probe_fn=lambda _i: False, no_venv=True
         )
-        assert proc.returncode != 0
-        assert "lpr_definitely_absent_module" in proc.stderr
+        assert action == "global"
+        assert target == ["py"]
 
-    def test_missing_deps_install_into_project_venv(self):
-        bat = self._bat()
-        # 缺依赖 -> 建项目内 .venv，而不是塞进用户已有解释器
-        assert "%PY% -m venv .venv" in bat
-        assert ".venv\\Scripts\\python.exe" in bat
-        # 建不出来时要明确告警并回落到原解释器，不能静默继续
-        assert "[WARN] could not create .venv" in bat
-        # 逃生门：想装进现有解释器的人要有办法
-        assert "LPR_NO_VENV" in bat
+    def test_venv_lives_inside_the_project(self):
+        assert LAUNCHER.venv_python(ROOT).parent.parent == ROOT / ".venv"
 
-    def test_deps_are_reprobed_after_install(self):
-        """装完必须复检 —— "装成功但装进别的解释器"不能静默通过。"""
-        bat = self._bat()
-        assert bat.count('-c "%PROBE%"') >= 2
-        assert "[ERROR] Dependencies still missing after install." in bat
-
-    def test_gui_extra_matches_launcher_fallback(self):
-        """pyproject 的 extras 与 start.bat 的兜底包名不能各说各话。"""
-        toml = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        bat = self._bat()
-        assert 'gui = ["PySide6-Essentials>=6.5"]' in toml
-        assert 'deep = ["rapidocr-onnxruntime>=1.2"]' in toml
-        # 兜底清单里的每个包都必须能在 pyproject 里找到出处
-        assert '"PySide6-Essentials>=6.5"' in bat
-        assert '"rapidocr-onnxruntime>=1.2"' in bat
-        assert '"numpy>=1.24"' in bat and '"Pillow>=10.0"' in bat
-
-    def test_launcher_prefers_pyproject_as_single_source_of_truth(self):
-        """首选 editable 安装，pyproject 才是依赖的唯一出处。"""
-        assert 'pip install -e ".[deep,gui]"' in self._bat()
-
-    def test_installer_does_not_inherit_foreign_pythonpath(self):
+    def test_install_env_drops_a_foreign_pythonpath(self):
         """pip 不能继承外部 PYTHONPATH。
 
-        原因（实测踩到）：``PYTHONPATH`` 里任何一个目录都会让该目录下的
-        ``sitecustomize.py`` 被**安装器自己的进程**加载。一旦它是某种
-        沙箱 / 企业策略 shim，pip 解包时的 ``os.unlink`` 就会被劫持，
-        抛出与依赖本身毫无关系的错误（我们这边真实复现过
-        ``SystemExit: 1`` 从第三方 sitecustomize 里冒出来）。
+        外部 PYTHONPATH 上的任何目录都会被 Python 自动 import 其中的
+        ``sitecustomize.py``，等于让第三方代码在**安装器自己的进程**里执行。
+        我们真实撞到过：pip 解包时的 ``os.unlink`` 被某个策略型 sitecustomize
+        劫持，抛出与被装依赖毫无关系的 ``SystemExit: 1``。
         """
-        bat = self._bat()
-        assert 'set "KEEP_PYTHONPATH=%PYTHONPATH%"' in bat
-        assert 'set "PYTHONPATH="' in bat
-        # 用户原有的 PYTHONPATH 要在启动时还原，不能被悄悄丢掉
-        assert "%KEEP_PYTHONPATH%" in bat
-        # 且必须走 if/else —— 直接拼 "src;%KEEP_PYTHONPATH%" 在空值时会留下
-        # 尾随分号，而 sys.path 里的空条目等价于把当前工作目录加进去
-        assert "if defined KEEP_PYTHONPATH" in bat
-        assert 'set "PYTHONPATH=%~dp0src;%PYTHONPATH%"' not in bat
+        env = LAUNCHER.install_env({"PATH": "x", "PYTHONPATH": "C:/somewhere/shim"})
+        assert "PYTHONPATH" not in env
+        assert env["PATH"] == "x"
+
+    def test_build_env_injects_src_without_a_trailing_separator(self, tmp_path):
+        # 空值直接拼字符串会留下尾随分隔符，而 sys.path 里的空条目等价于
+        # 把当前工作目录加进去
+        env = LAUNCHER.build_env({}, tmp_path)
+        assert env["PYTHONPATH"] == str(tmp_path / "src")
+        assert not env["PYTHONPATH"].endswith(os.pathsep)
+
+    def test_build_env_keeps_the_users_pythonpath(self, tmp_path):
+        env = LAUNCHER.build_env({"PYTHONPATH": "D:/mine"}, tmp_path)
+        assert env["PYTHONPATH"] == str(tmp_path / "src") + os.pathsep + "D:/mine"
+
+    def test_install_spec_and_fallbacks_match_pyproject(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        assert 'gui = ["PySide6-Essentials>=6.5"]' in pyproject
+        assert 'deep = ["rapidocr-onnxruntime>=1.2"]' in pyproject
+        assert LAUNCHER.INSTALL_SPEC == ".[deep,gui]"
+        joined = " ".join(LAUNCHER.FALLBACK_PACKAGES)
+        for pin in (
+            "PySide6-Essentials>=6.5",
+            "rapidocr-onnxruntime>=1.2",
+            "numpy>=1.24",
+            "Pillow>=10.0",
+        ):
+            assert pin in joined, f"兜底清单漏了 {pin}"
+
+    def test_main_rejects_python_below_the_floor(self, monkeypatch, capsys):
+        monkeypatch.setattr(LAUNCHER, "MIN_PY", (99, 0))
+        assert LAUNCHER.main(["engines"]) == 1
+        out = capsys.readouterr().out
+        assert "错误" in out  # 中文提示确实发出来了
+        assert "99.0" in out
+
+
+class TestLauncherMessages:
+    """中文提示的落点：``tools/no-python.txt`` 与真实运行结果。"""
+
+    @staticmethod
+    def _raw() -> bytes:
+        return (ROOT / "tools" / "no-python.txt").read_bytes()
+
+    def test_notice_is_utf8_chinese_without_bom(self):
+        raw = self._raw()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+        text = raw.decode("utf-8")
+        assert sum(1 for char in text if ord(char) > 127) > 50
+        assert "python.org" in text
+        assert "3.10" in text
+
+    def test_notice_uses_crlf(self):
+        """必须是 CRLF：``type`` 只吐字节，LF 行尾在 cmd 里不会回车，
+        会显示成阶梯状错位。``.gitattributes`` 里也钉了这一条，防止换个
+        平台检出就被转成 LF。"""
+        raw = self._raw()
+        assert raw.count(b"\n") == raw.count(b"\r\n")
+        assert b"\r\n" in raw
+
+    @pytest.mark.skipif(os.name != "nt", reason="cmd.exe 专有")
+    def test_type_copies_the_notice_bytes_verbatim(self):
+        """``type`` 把文件字节原样吐出来，UTF-8 中文不会在路上被改坏。
+
+        这条是"无 Python 兜底路径"能成立的前提：没有解释器时，批处理只能靠
+        `type` 输出那个提示文件；能不能*看得见*中文另说，取决于控制台代码页
+        （start.bat 里有 `chcp 65001`），但字节层必须完整。
+
+        命令行刻意用相对路径且不加引号 —— ``cmd /c`` 对嵌套引号有自己的解析
+        规则，带引号的绝对路径会被拆坏（这条测试第一版就这么失败过）。
+        """
+        proc = subprocess.run(
+            ["cmd", "/c", "type", r"tools\no-python.txt"],
+            cwd=str(ROOT),
+            capture_output=True,
+            timeout=60,
+        )
+        assert "未找到 Python 解释器" in proc.stdout.decode("utf-8")
+
+    @pytest.mark.skipif(os.name != "nt", reason="start.bat 是 Windows 批处理")
+    def test_start_bat_really_launches_and_speaks_chinese(self):
+        """端到端：真跑一次 ``start.bat``，确认它没被 cmd 读错行。
+
+        这是唯一能抓住 v2.3.6 那个 bug 的测试 —— 静态检查会告诉你"文件写得
+        对"，但只有真跑一遍才能知道 cmd 会不会把中文残片当命令执行。
+        """
+        for mod in ("numpy", "cv2", "PIL", "PySide6"):
+            pytest.importorskip(mod)
+        env = dict(os.environ)
+        env["LPR_PYTHON"] = sys.executable  # 复用当前解释器，避免真去装东西
+        env.pop("PYTHONPATH", None)
+        proc = subprocess.run(
+            ["cmd", "/c", "start.bat engines"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            timeout=300,
+        )
+        out = proc.stdout.decode("utf-8", "replace")
+        assert proc.returncode == 0, out + proc.stderr.decode("utf-8", "replace")
+        assert "解释器正常" in out
+        assert "正在启动" in out
+        # 中文被当成命令执行时的典型症状
+        assert "不是内部或外部命令" not in out
 
 
 @pytest.mark.parametrize("doc", ["README.md", "docs/UPGRADE.md"])

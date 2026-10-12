@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.3.5（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.6（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -15,6 +15,9 @@
 > v2.3.5 修掉 `start.bat` 的依赖误判（只查 PySide6，不查 numpy/OpenCV）——
 > 在没有 `.venv` 的机器上会先装 220 MB 再以 `ModuleNotFoundError` 告终；
 > 改为「缺依赖就建项目内 `.venv`」，不污染用户已有解释器。
+> v2.3.6 把中文提示从 `.bat` 里搬走——cmd 用上一行的「字符数」当字节偏移，
+> 文件里出现汉字就会读错行、把残片当命令执行；启动器改成
+> 「纯 ASCII 引导壳 + Python 打印中文」两层结构。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -189,6 +192,21 @@ lpr predict ./photos/ --engine deep --mask --report out/   # 报告落盘同样�
 
 缺依赖时**装进项目内的 `.venv`**，不会往你系统里已有的 Python 塞包；如果那个
 解释器本来就齐全，则直接复用、不重复下载。第二次双击复用 `.venv`，秒开。
+
+> **为什么逻辑不在 `.bat` 里？** `start.bat` 只是一个纯 ASCII 的引导壳，
+> 真正的启动逻辑和中文提示都在 `tools/launcher.py`。
+> 原因很硬：cmd.exe 计算批处理「下一行」的偏移时，拿上一行的**字符数**当
+> **字节偏移**用，文件里只要出现一个汉字，下一行就会被超前若干字节开始读，
+> 剩下的残片会被当成命令执行：
+>
+> ```text
+>        完成 —— CV 引擎、深度引擎、图形界面均已就绪。
+> '，未改动你系统里的' 不是内部或外部命令，也不是可运行的程序。
+> ```
+>
+> 更坑的是它不稳定 —— 短文件里超前量往往刚好落在下一行的缩进空格里，
+> 看起来完全正常。所以中文一律交给 Python 打印（Python 走 `WriteConsoleW`，
+> 与控制台代码页无关）。
 
 参数透传给命令行：
 
@@ -393,6 +411,8 @@ src/lpr/
     ├── security.py     # 安全层：Limits / PrivacyPolicy / 脱敏 / 限流 / 模型校验三态
     └── logging_setup.py
 tools/
+├── launcher.py               # 启动器：找解释器 / 建 .venv / 装依赖 / 启动（只依赖标准库）
+├── no-python.txt             # 找不到 Python 时的中文提示（UTF-8，由 start.bat 用 type 输出）
 ├── benchmark.py              # 引擎性能基准（耗时/QPS/命中率）
 ├── bench_workers.py          # 多进程批量加速基准（含纯 CPU 并行对照）
 ├── eval_locate.py            # 定位客观评测 + 网格搜索（支持 --save-baseline/--baseline）
@@ -406,8 +426,8 @@ tools/
 └── make_regression_baseline.py  # 生成真实样张行为快照基线
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
-start.bat               # Windows 一键启动（找解释器 → 校验版本 → 补依赖到 .venv → 开界面）
-tests/                  # 776 项 pytest 测试（含 tests/baselines/ 行为基线）
+start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
+tests/                  # 797 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 ```

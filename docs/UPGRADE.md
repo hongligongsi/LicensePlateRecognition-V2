@@ -1163,3 +1163,121 @@ SystemExit: 1
   且不得再出现 `PYTHONPATH=%~dp0src;%PYTHONPATH%` 这种空值留分号的写法。
 
 测试总数 776 → **785**，全部通过；行为基线（11 张真实样张）零变化。
+
+---
+
+# v2.3.6 —— 启动器改为「纯 ASCII 引导壳 + Python 打印中文」
+
+诉求很朴素：把启动脚本的英文提示改成中文。第一版直接在 `start.bat` 里写中文，
+**实测当场炸了**，于是变成了一次结构性重构。
+
+## 一、实测结论：批处理文件里不能出现汉字（不是风格问题）
+
+第一版写法是 `chcp 65001` + 文件存成 UTF-8（无 BOM），小探针测试通过。
+换成真实脚本后，第 20 行左右出现：
+
+```text
+       完成 —— CV 引擎、深度引擎、图形界面均已就绪。
+'，未改动你系统里的' 不是内部或外部命令，也不是可运行的程序。
+```
+
+一行提示被从中间截断，**残片被当成命令执行**。
+
+根因：cmd.exe 计算批处理「下一行」的偏移时，拿上一行的**字符数**当**字节偏移**
+用。文件里只要有一个多字节字符，下一行就会被超前 ``(字节数 - 字符数)`` 个字节
+开始读。核对得上：上一行 `echo ...完成 —— CV 引擎、深度引擎、图形界面均已就绪。`
+含 20 个多字节字符，正好吞掉下一行开头约 40 字节。
+
+**为什么小探针会骗过我们**：短文件里超前量往往刚好落在下一行的缩进空格里，
+输出看上去完全正常。我们那个 6 行探针就是这么"通过"的 —— 这是本次最值得记的
+一条经验：**验证要跑真实规模，探针通过 ≠ 成立**。
+
+顺带确认：把中文放在 `if (...)` 块里、以及 `goto` 之后，同样会错位；与
+`(` `)` 转义无关，与"特殊字节"无关，纯粹是偏移数学。
+
+## 二、新结构：两层
+
+| 文件 | 职责 | 编码 |
+|---|---|---|
+| `start.bat` | 纯 ASCII 引导壳：找解释器 → 转交 → 无解释器兜底 | **ASCII（硬约束）** |
+| `tools/launcher.py` | 版本校验、依赖探测、建 `.venv`、pip 安装、启动；**全部中文提示** | UTF-8 |
+| `tools/no-python.txt` | 找不到任何 Python 时的中文提示，由 `type` 原样输出 | UTF-8 |
+
+中文改由 Python 打印：Python 在 Windows 经 `WriteConsoleW` 输出，与控制台代码页
+（65001 / 936）无关 —— 用户日志里 `lpr engines` 的中文一直显示正常，就是这条路径。
+
+`:no_python` 分支没法用 Python（鸡生蛋问题），改用 `type` 输出 UTF-8 文本文件：
+`type` 是字节拷贝，批处理解析器全程不接触多字节字符，命令本身仍是 ASCII；
+`chcp 65001` 只服务于这一条路径的渲染。
+
+## 三、顺带修掉的三件小事
+
+1. **重定向时输出顺序错乱**：`start.bat > out.txt` 时 Python 的 stdout 变块缓冲，
+   本模块的提示整段压在子进程输出之后。改成行缓冲，控制台与管道下顺序一致。
+   （这条是写端到端测试时被自己的断言抓出来的。）
+2. **`%~dp0` 在切代码页之前捕获**：路径里含中文时（`D:/我的项目/lpr-v2`）
+   更稳。
+3. **解释器可用性校验**：失效的 `LPR_PYTHON`、坏掉的 `.venv` 会先被清理掉，
+   再回落到 `py -3` / `python`，而不是直接报一句 cmd 的
+   `'xxx' 不是内部或外部命令`。
+
+## 四、批处理的逻辑搬进 Python 之后的额外收益
+
+`choose_target()` 现在是一个纯函数，可以拿假 probe 直接测四种分支
+（复用 / 用现有 venv / 建 venv / `LPR_NO_VENV` 逃生门）——
+这在批处理里是做不到的。安装环境与启动环境的构造也抽成了
+`install_env()` / `build_env()` 两个纯函数，于是"pip 不继承外部 PYTHONPATH"
+和"`src` 注入不留尾随分隔符"这两条约束第一次有了**行为级**测试，
+而不再只是对脚本做字符串匹配。
+
+## 五、验证（三条路径都真跑）
+
+1. **正常启动**：`start.bat engines` → `[1/4] 解释器正常` … `[4/4] 正在启动...`
+   + 引擎表，中文完好、顺序正确；
+2. **从零全路径**：脚本复制到临时目录（等价全新检出）→ 建 `.venv` →
+   装 `.[deep,gui]` → 复检 → 启动，全程中文；
+3. **无 Python 兜底**：把 PATH 收窄到只剩 `System32`（`py` / `python` 都不可见、
+   无 `.venv`）→ `type` 输出的中文正常，没有任何残片被当命令执行。
+
+另外反向验证：把同一份输出按 GBK 解码得到乱码，证明它确实是 UTF-8 字节
+（即 `chcp` 生效、不是碰巧）。
+
+## 六、测试
+
+`tests/test_launch_env.py` 重写为 5 个测试类（32 项）：
+
+* `TestWindowsLauncher`：`start.bat` 必须是纯 ASCII、无 BOM、CRLF；
+  逻辑不许长回批处理（`set "PROBE=` / `-m venv` / `-m pip` / `sys.version_info`
+  都不许出现）；必须转交 `tools/launcher.py`；
+* `TestPythonLauncher`：**用 AST 断言只导入标准库**（启动器必须能在
+  "什么都没装"的解释器上跑）；版本号与 pyproject / cli.py 互相钉住；
+  `choose_target` 四种分支；`probe` 对坏路径返回 False 而不抛异常；
+  `install_env` 剥掉 PYTHONPATH；`build_env` 不留尾随分隔符；
+* `TestLauncherMessages`：提示文件是 UTF-8 中文且无 BOM；
+  `type` 原样输出该文件（Windows 专有）；
+  **真跑一次 `start.bat engines` 并断言中文没被当命令执行**（这是唯一能抓住
+  本版本那个 bug 的测试）。
+
+测试总数 785 → **797**，全部通过；行为基线（11 张真实样张）零变化。
+
+## 七、附带发现（本次未改）：CI 的 lint 任务其实是红的
+
+在验证过程中装了 ruff / mypy 真跑了一遍，发现两个 **既有**、与本次改动无关的
+问题 —— 也就是说 `main` 上的 `lint` job 一直没过：
+
+* `ruff check src tools tests` → **142 个错误**、`ruff format --check` →
+  **46 个文件需要重排**（例如 `B905` 要求 `zip(..., strict=)`、
+  `SIM105` 要求 `contextlib.suppress`，这些规则在本项目动工之后才加入）；
+* `mypy` → **33 errors in 10 files**（如 `cli.py:143` 需要类型标注、
+  `api.py:540` 的 `VideoWriter_fourcc`）。
+
+根因是 `dev` extra 里写的是 `ruff>=0.6`（不封顶），CI 每次装到的都是**当时最新**的
+ruff/mypy，而代码是按 0.6 时代写的。两种修法各有取舍（把工具版本钉死，
+或把代码升到最新规则），需要单独决策，故本版本只保证**新增/改动的文件是干净的**：
+
+```text
+$ ruff check tools/launcher.py tests/test_launch_env.py
+All checks passed!
+$ ruff format --check tools/launcher.py tests/test_launch_env.py
+2 files already formatted
+```
