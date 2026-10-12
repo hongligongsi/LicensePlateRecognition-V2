@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.3.8（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.9（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 

@@ -23,6 +23,7 @@
     # 生成默认配置文件
     lpr config
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,16 +31,19 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from .api import Recognizer
 from .config import Config
 from .engines import describe_engines
-from .plate_rules import correct, describe as describe_plate, is_valid
+from .plate_rules import correct, is_valid
+from .plate_rules import describe as describe_plate
 from .types import parse_color
 from .utils.logging_setup import setup_logging
 from .utils.security import SecurityError, mask_plate, model_info
 
 PROG = "lpr"
-VERSION = "2.3.8"
+#: 从包元数据取，避免版本号在 cli / pyproject / 界面标题里各写一份
+VERSION = __version__
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -57,17 +61,27 @@ def _make_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("predict", help="识别图片（单张/目录）")
     p.add_argument("inputs", nargs="+", help="图片路径或目录")
     p.add_argument(
-        "--engine", default=None, choices=["auto", "cv", "deep", "cascade"],
+        "--engine",
+        default=None,
+        choices=["auto", "cv", "deep", "cascade"],
         help="识别引擎：auto(自动) / cv(传统) / deep(深度学习) / cascade(级联，最省时)",
     )
     p.add_argument("--recursive", action="store_true", help="目录时递归查找子目录")
-    p.add_argument("--save-annotated", metavar="DIR", nargs="?", const="annotated",
-                   help="保存标注图到指定目录（默认 annotated/）")
+    p.add_argument(
+        "--save-annotated",
+        metavar="DIR",
+        nargs="?",
+        const="annotated",
+        help="保存标注图到指定目录（默认 annotated/）",
+    )
     p.add_argument("--report", metavar="DIR", help="输出 JSON + CSV 报告到指定目录")
     p.add_argument("--json", action="store_true", help="在终端以 JSON 输出")
     p.add_argument("--mask", action="store_true", help="对输出中的车牌号打码（隐私保护）")
     p.add_argument(
-        "--workers", type=int, default=1, metavar="N",
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
         help=(
             "并行识别进程数（默认 1=串行）。>1 走多进程加速，适合成百上千张；"
             "0 表示按 CPU 核数自动决定。注意：多进程模式下结果不含 ROI 图像"
@@ -146,7 +160,8 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
         if path.is_dir():
             pattern = "**/*" if args.recursive else "*"
             targets.extend(
-                p for p in path.glob(pattern)
+                p
+                for p in path.glob(pattern)
                 if p.is_file() and p.suffix.lower() in rec.limits.allowed_extensions
             )
         else:
@@ -162,9 +177,7 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
         from .batch import resolve_workers
 
         print(f"并行识别：{len(targets)} 张图 / {resolve_workers(workers, len(targets))} 进程")
-    batch = rec.recognize_many(
-        targets, annotate_dir=args.save_annotated, workers=workers
-    )
+    batch = rec.recognize_many(targets, annotate_dir=args.save_annotated, workers=workers)
 
     # 按底色过滤（可多选，如 --color 黄色,危险品）
     wanted: set | None = None
@@ -222,8 +235,11 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
         print(f"\n报告已写入:\n  {jp}\n  {cp}")
 
     if args.json:
-        print(json.dumps([o.to_dict(rec.privacy) for o in batch.outcomes],
-                         ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                [o.to_dict(rec.privacy) for o in batch.outcomes], ensure_ascii=False, indent=2
+            )
+        )
     return 0
 
 
@@ -235,9 +251,7 @@ def cmd_video(args: argparse.Namespace, cfg: Config) -> int:
     print(f"开始处理视频源 {args.input}（每 {args.stride} 帧识别一次，Ctrl+C 中断）")
     count = 0
     try:
-        for plate in rec.recognize_video(
-            args.input, stride=args.stride, output_video=args.output
-        ):
+        for plate in rec.recognize_video(args.input, stride=args.stride, output_video=args.output):
             count += 1
             info = describe_plate(plate.text)
             print(
@@ -284,8 +298,10 @@ def cmd_check(args: argparse.Namespace, cfg: Config) -> int:
         info = describe_plate(text)
         status = "✓ 合法" if valid else "✗ 不合法"
         print(f"{text:<14} {status:<10} 类型={info['type']}")
-        print(f"{'':<14} 省份={info['province'] or '—'} 发牌机关={info['issuer'] or '—'} "
-              f"新能源={'是' if info['is_new_energy'] else '否'}")
+        print(
+            f"{'':<14} 省份={info['province'] or '—'} 发牌机关={info['issuer'] or '—'} "
+            f"新能源={'是' if info['is_new_energy'] else '否'}"
+        )
 
         if not valid and args.fix:
             fixed, changes = correct(text)
@@ -319,8 +335,7 @@ def cmd_models(args: argparse.Namespace, cfg: Config) -> int:
         if path.is_dir():
             continue
         info = model_info(path)
-        print(f"  {info['path']:<22} {info['size_bytes'] / 1048576:>8.2f} MB  "
-              f"{info['mtime']}")
+        print(f"  {info['path']:<22} {info['size_bytes'] / 1048576:>8.2f} MB  {info['mtime']}")
         if args.verify:
             check = sec.verify_models([path])[0]
             # 「跳过校验」用 —，不要显示成 ✓：没检查 ≠ 检查通过
@@ -340,12 +355,20 @@ def cmd_config(args: argparse.Namespace, cfg: Config) -> int:
     from .config import DEFAULT_CONFIG_PATH
 
     if args.show:
-        print(json.dumps(json.loads(Path(args.path or DEFAULT_CONFIG_PATH).read_text("utf-8")),
-                         ensure_ascii=False, indent=2)
-              if (Path(args.path or DEFAULT_CONFIG_PATH)).exists()
-              else json.dumps(cfg.save(Path(args.path) if args.path else None) and
-                              json.loads((Path(args.path or DEFAULT_CONFIG_PATH)).read_text("utf-8")),
-                              ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                json.loads(Path(args.path or DEFAULT_CONFIG_PATH).read_text("utf-8")),
+                ensure_ascii=False,
+                indent=2,
+            )
+            if (Path(args.path or DEFAULT_CONFIG_PATH)).exists()
+            else json.dumps(
+                cfg.save(Path(args.path) if args.path else None)
+                and json.loads((Path(args.path or DEFAULT_CONFIG_PATH)).read_text("utf-8")),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     path = cfg.save(args.path or DEFAULT_CONFIG_PATH)

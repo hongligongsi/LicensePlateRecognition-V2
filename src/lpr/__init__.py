@@ -26,7 +26,8 @@ from .engines import (
     get_engine,
     register_engine,
 )
-from .plate_rules import correct, describe as describe_plate, is_valid, plate_score
+from .plate_rules import correct, is_valid, plate_score
+from .plate_rules import describe as describe_plate
 from .tracker import MultiPlateTracker, merge_same_image
 from .types import COLOR_NAMES, PlateColor, PlateResult, parse_color
 from .utils.logging_setup import setup_logging
@@ -39,7 +40,9 @@ from .utils.security import (
     verify_model,
 )
 
-__version__ = "2.3.1"
+#: 版本号唯一来源。``cli.VERSION``、界面标题、状态栏都从这里取，
+#: 不再各自维护字面量（v2.3.9 之前这里停在 2.3.1，与 pyproject 各说各话）。
+__version__ = "2.3.9"
 
 __all__ = [
     # 高层 API

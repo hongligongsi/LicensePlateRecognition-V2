@@ -138,7 +138,7 @@ class EngineConfig:
 class UIConfig:
     """界面相关。"""
 
-    window_title: str = "车牌识别系统 v2.3.8"
+    window_title: str = "车牌识别系统 v2.3.9"
     window_size: tuple[int, int] = (1280, 800)
     #: 摄像头识别间隔（秒），原版固定 2 秒，这里可调
     camera_interval: float = 0.35
@@ -183,9 +183,7 @@ class SecurityConfig:
     model_hashes: dict[str, str] = field(
         default_factory=lambda: {
             "svm.dat": "ce3fdffb3e9529fceaacdd3aeb091ce23161f24510c4cc32ffa47708dcda47c5",
-            "svmchinese.dat": (
-                "dd3982d022008bf163dc0b02719a4a4b454a5fb8093653c13fc3d28fc67f41d8"
-            ),
+            "svmchinese.dat": ("dd3982d022008bf163dc0b02719a4a4b454a5fb8093653c13fc3d28fc67f41d8"),
         }
     )
 
@@ -235,7 +233,7 @@ class Config:
     log_level: str = "INFO"
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> "Config":
+    def load(cls, path: str | Path | None = None) -> Config:
         """从 JSON 文件加载配置，文件不存在则使用默认值。
 
         支持点号路径的浅层覆盖，例如 ``{"engine": {"locate": {"max_side": 1600}}}``。
@@ -287,7 +285,7 @@ class Config:
         }
 
     @classmethod
-    def from_payload(cls, payload: dict) -> "Config":
+    def from_payload(cls, payload: dict) -> Config:
         """从 :meth:`to_payload` 的结果还原配置。"""
         cfg = cls()
         if payload:
@@ -341,13 +339,13 @@ def _coerce(value: Any, current: Any, ftype: Any) -> Any:
 
 
 __all__ = [
+    "DEFAULT_CONFIG_PATH",
+    "MODELS_DIR",
+    "PROJECT_ROOT",
     "Config",
     "EngineConfig",
     "LocateConfig",
-    "UIConfig",
     "SecurityConfig",
-    "PROJECT_ROOT",
-    "MODELS_DIR",
-    "DEFAULT_CONFIG_PATH",
+    "UIConfig",
     "asdict",
 ]

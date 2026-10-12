@@ -200,11 +200,27 @@ class TestPythonLauncher:
         """路径不存在也不能抛异常 —— 上层只想知道"能不能用"。"""
         assert LAUNCHER.probe([str(ROOT / "no" / "such" / "python.exe")]) is False
 
-    def test_version_matches_pyproject_and_cli(self):
-        # 版本号散落在多处，至少让它们互相钉住
-        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        assert f'version = "{LAUNCHER.VERSION}"' in pyproject
-        assert f'VERSION = "{LAUNCHER.VERSION}"' in (SRC / "lpr" / "cli.py").read_text(
+    def test_version_matches_pyproject_cli_and_package(self):
+        """版本号只有 ``lpr.__version__`` 一个字面量来源，其余全部对齐。
+
+        v2.3.9 之前 cli.py 自己写一份、``lpr.__version__`` 又停在 2.3.1，
+        状态栏、命令行 --version、pyproject 三处各说各话——用值比较钉死。
+        """
+        import tomllib
+
+        import lpr
+
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        pkg_version = lpr.__version__
+        assert pkg_version == LAUNCHER.VERSION
+        assert pyproject["project"]["version"] == pkg_version
+
+        from lpr import cli
+
+        assert pkg_version == cli.VERSION  # 不再是独立字面量，而是 from . import __version__
+        source = (SRC / "lpr" / "cli.py").read_text(encoding="utf-8")
+        assert "from . import __version__" in source
+        assert f'__version__ = "{pkg_version}"' in (SRC / "lpr" / "__init__.py").read_text(
             encoding="utf-8"
         )
 
