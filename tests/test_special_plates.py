@@ -312,3 +312,133 @@ class TestCvEngineScore:
         from lpr.engines.cv_engine import _score_text
 
         assert _score_text("A1B2C3") < _score_text("京A12345")
+
+
+# --------------------------------------------------------------------------- #
+# 号牌规范口径核对（v2.3.4）：三处曾被怀疑"我们写错了"的地方
+# --------------------------------------------------------------------------- #
+
+
+class TestNormsEmbassy:
+    """使领馆号牌：**「使」字在号码末尾**（2017-01-09 起）。
+
+    依据《外交车辆管理办法》及 GA 36-2018 对使馆/领馆汽车号牌式样的修订：
+    2017 年换发时把原先居首的**红色**「使」字改为**白色**并移到号码**之后**。
+
+    参考实现用 ``[0-9]{6}使`` 是对的，我们原先只有 ``使[0-9]{6}``（旧式），
+    那条被当成"也许我们才对"——核对后确认**对方是对的**。
+    """
+
+    @pytest.mark.parametrize("text", ["123456使", "X59301使"])
+    def test_current_style_digits_then_shi(self, text: str):
+        assert identify_format(text) is not None
+        assert identify_format(text).name == "使领馆"
+
+    def test_legacy_style_still_accepted(self):
+        # 2017-05-01 废止，但旧影像里仍有
+        assert identify_format("使123456").name == "使领馆"
+
+    @pytest.mark.parametrize("text", ["粤204领", "沪204领"])
+    def test_consulate_province_code_ling(self, text: str):
+        # 领馆牌 = 省级简称 + 国家/国际组织代码 + 「领」（没有纯数字形态）
+        assert identify_format(text).name == "使领馆"
+
+    def test_consulate_has_no_bare_digit_form(self):
+        # 「领」必须带省份简称：纯数字+领 不是领馆牌的形态
+        assert identify_format("123456领") is None
+
+    def test_current_style_not_truncated_by_extraction(self):
+        from lpr.engines.deep_engine import _PLATE_TEXT
+
+        assert _PLATE_TEXT.search("123456使").group(0) == "123456使"
+
+
+class TestNormsPolice:
+    """警用号牌：**第三位可以是 A/B/C/D**，不只是数字。
+
+    依据《警车管理规定》附件 2《警车号牌式样》：登记编号七位——第一位省简称、
+    第二位地区字母、**第三位 A/B/C/D 或阿拉伯数字**（依次为法院、检察院、
+    国家安全机关、司法行政机关、公安机关），第四至六位注册编号，第七位红色"警"。
+    """
+
+    @pytest.mark.parametrize(
+        "text,department",
+        [
+            ("京AA006警", "法院"),
+            ("京AB006警", "检察院"),
+            ("京AC006警", "国家安全机关"),
+            ("京AD006警", "司法行政机关"),
+        ],
+    )
+    def test_letter_third_position_is_legal(self, text: str, department: str):
+        fmt = identify_format(text)
+        assert fmt is not None, f"第三位字母的警牌（{department}）应合法"
+        assert fmt.name == "警用"
+
+    @pytest.mark.parametrize("text", ["京A0006警", "京A1234警", "京A12345警"])
+    def test_digit_third_position_still_legal(self, text: str):
+        assert identify_format(text).name == "警用"
+
+    def test_only_abcd_admitted(self):
+        # 第三位的字母只到 D：E 之后不属警用部门代码
+        assert identify_format("京AE006警") is None
+
+    def test_extraction_keeps_letter_third_position(self):
+        from lpr.engines.deep_engine import _PLATE_TEXT
+
+        assert _PLATE_TEXT.search("京AA006警").group(0) == "京AA006警"
+
+
+class TestNormsMilitary:
+    """军队号牌：现行 **2012 式** 是「双字母 + 5 位数字」，汉字字头是 2004 式旧牌。
+
+    2013-05-01 全军统一换发 2012 式：字头取军队大单位简称的**大写汉语拼音
+    字母**、字头号为二级单位的大写英文字母、序号 5 位数字。
+    我们原先只有「汉字字头 + 字母 + 5 位数字」（2004 式，已废止），
+    等于把现行军牌整体判成非法。
+    """
+
+    @pytest.mark.parametrize("text", ["LB12345", "KA12345", "HA12345", "VA12345"])
+    def test_2012_style_two_letters(self, text: str):
+        fmt = identify_format(text)
+        assert fmt is not None, f"{text} 是现行 2012 式军牌"
+        assert fmt.name == "军队"
+
+    @pytest.mark.parametrize("text", ["空B12345", "军A12345"])
+    def test_2004_style_kept_for_old_footage(self, text: str):
+        assert identify_format(text).name == "军队"
+
+    @pytest.mark.parametrize("text", ["AB1234", "AB123456", "A12345"])
+    def test_letter_digit_shape_is_strict(self, text: str):
+        # 必须是"恰好 2 字母 + 5 数字"：位数不对就不是军牌
+        assert identify_format(text) is None
+
+    def test_does_not_swallow_armed_police(self):
+        from lpr.engines.deep_engine import _PLATE_TEXT
+
+        # 纯字母数字分支若放在武警分支之前，会把 WJ012345 切成 WJ01234
+        assert _PLATE_TEXT.search("WJ012345").group(0) == "WJ012345"
+        assert identify_format("WJ012345").name == "武警"
+
+
+class TestNormsHazmat:
+    """危险品运输号牌：末位「危」，并容忍 OCR 多认成「危险/危险品」。"""
+
+    @pytest.mark.parametrize("text", ["京A1234危", "京A1234危险", "京A1234危险品"])
+    def test_suffix_variants_all_legal(self, text: str):
+        fmt = identify_format(text)
+        assert fmt is not None
+        assert fmt.name == "危险品运输"
+
+    def test_suffix_variants_extractable(self):
+        from lpr.engines.deep_engine import _PLATE_TEXT
+
+        for text in ("京A1234危", "京A1234危险", "京A1234危险品"):
+            assert _PLATE_TEXT.search(text).group(0) == text
+
+    def test_bare_xian_is_not_a_suffix(self):
+        # 「险」不能单独当后缀（放宽的只是"危"后面的尾巴）
+        assert identify_format("京A1234险") is None
+
+    def test_plain_plate_unaffected(self):
+        assert identify_format("京A12345").name == "普通民用"

@@ -275,23 +275,47 @@ def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]
 
 
 def _order_quad(pts: np.ndarray) -> np.ndarray:
-    """把 4 个角点排成 左上、右上、右下、左下。
+    """把 4 个角点排成（左上、右上、右下、左下），与输入顺序无关。
 
-    原版是靠 ``left_point / right_point / heigth_point / low_point`` 四个
-    极值点拼出来的，遇到旋转矩形会错位。这里用标准的"x+y 最小/最大"
-    + 叉积判断，鲁棒得多，也顺便支持透视矫正。
+    早期实现用「x+y 最小/最大 + y-x 最小/最大」两两配对，只在**侧倾不超过
+    45°** 时成立：车牌一旦倾斜更多，配出来的"上边"其实是短边，矫正图会被
+    转成 90° 的竖图（实测 220×70 的牌子在 46° 就已颠倒），后面的字符分割
+    自然全线失效。
+
+    现在的做法分两步：
+
+    1. **极角环形排序**：按绕质心的极角排序，得到与旋转角无关的稳定环形
+       顺序。图像坐标系（y 向下）里这个顺序是顺时针，因此映射到目标矩形
+       不会引入镜像翻转；
+    2. **挑起点**：4 个环上起点中只有两个能让"上边"是长边（另一个正好是它
+       的 180° 反转）。再要求上边**指向右侧**（``tr.x > tl.x``）——车牌从
+       左往右阅读，只要侧倾不到 90°，真正的左上角必然满足这一条。
+
+    ``tr.x > tl.x`` 这项剔除了 180° 反转，把可用范围从 45° 扩到 90°；
+    这是纯几何能给出的最好结果（正方形般的四边形除外，见下面的打分）。
     """
     pts = np.asarray(pts, dtype=np.float32).reshape(4, 2)
-    ordered = np.zeros((4, 2), dtype=np.float32)
 
-    s = pts.sum(axis=1)
-    ordered[0] = pts[np.argmin(s)]  # 左上
-    ordered[2] = pts[np.argmax(s)]  # 右下
+    center = pts.mean(axis=0)
+    angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+    ring = pts[np.argsort(angles)]
 
-    d = np.diff(pts, axis=1).ravel()
-    ordered[1] = pts[np.argmin(d)]  # 右上
-    ordered[3] = pts[np.argmax(d)]  # 左下
-    return ordered
+    best: np.ndarray | None = None
+    best_key = (-1.0, False)
+    for i in range(4):
+        quad = np.roll(ring, -i, axis=0)
+        tl, tr, br, bl = quad
+        top = float(np.linalg.norm(tr - tl))
+        horizontal_pair = top + float(np.linalg.norm(br - bl))
+        vertical_pair = float(np.linalg.norm(bl - tl)) + float(np.linalg.norm(br - tr))
+        if horizontal_pair < vertical_pair:
+            continue  # 上边落在短边上 → 会把车牌横竖搞反
+        dx = float(tr[0] - tl[0])
+        # 先看阅读方向是否朝右，同分时取上边越贴水平越好的那个
+        key = (dx / max(top, 1e-6), dx > 0.0)
+        if best is None or key > best_key:
+            best, best_key = quad, key
+    return best if best is not None else ring
 
 
 def _warp_plate(img: np.ndarray, quad: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:

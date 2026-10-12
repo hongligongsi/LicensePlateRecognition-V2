@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.3.3（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.4（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -10,6 +10,8 @@
 > v2.3.2 专项提升军牌/警牌/白牌等特种号牌（语法补齐 + 红色字符判色）。
 > v2.3.3 补上启动入口（`python -m lpr`）、Windows 一键启动 `start.bat`
 > 与「环境与系统要求」说明，并修掉摄像头后端的跨平台硬编码。
+> v2.3.4 修复角点排序在侧倾 >45° 时把车牌矫正成竖图的缺陷（±89° 全范围
+> 归位），并按 GA 36-2018 /《警车管理规定》核对了三处号牌规范口径。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -381,7 +383,7 @@ tools/
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（找解释器 → 校验版本 → 装 GUI 依赖 → 开界面）
-tests/                  # 538 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 776 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 ```
@@ -390,7 +392,7 @@ docs/UPGRADE.md         # 与原项目的详细对比
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 538 项单元/集成测试
+pytest tests/ -q                                    # 776 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -429,6 +431,9 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
   且对任意输入都输出接近 1.0 的置信度 —— **需要精度请用 `deep` 或 `cascade`**
 - 深度引擎首次运行需下载 OCR 模型（约 10MB），之后离线可用
 - 双行牌已支持自动拆行，但极端倾斜/污损样本仍可能识别失败
+- 侧倾车牌的**矫正几何**已修复（v2.3.4，±89° 内不再被转成竖图），但
+  定位层对大幅侧倾车牌的**召回**仍偏弱——整景照片里侧倾 >45° 的车牌
+  可能根本找不到候选（矫正只在"找到了候选"之后才起作用）
 - 军牌 / 警牌（白牌特种牌）v2.3.2 已补齐语法层（警/军队/使领馆/武警新旧式
   严格校验、后缀与字头形近字纠错、序号位 I/O 修正）与判色层（红色字符信号
   识别阴影白底警牌），但**末位红字（警/军字头）的 OCR 漏检仍在**——

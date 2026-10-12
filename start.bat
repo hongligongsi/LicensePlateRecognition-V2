@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  License Plate Recognition v2.3.3 - Windows launcher
+rem  License Plate Recognition v2.3.4 - Windows launcher
 rem
 rem  Double-click       -> open the GUI
 rem  With arguments     -> forwarded to the CLI, e.g.
@@ -18,7 +18,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ============================================
-echo  License Plate Recognition v2.3.3
+echo  License Plate Recognition v2.3.4
 echo ============================================
 echo.
 

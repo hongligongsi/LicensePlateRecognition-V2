@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lpr-v2"
-version = "2.3.3"
+version = "2.3.4"
 description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
 readme = "README.md"
 requires-python = ">=3.10"
