@@ -26,3 +26,19 @@ out/
 
 # 深度学习模型缓存（运行时下载）
 ~/.rapidocr/
+
+# 数据集与下载缓存
+# 图片体积大且可复现（tools/fetch_ccpd.py / tools/fetch_hg.py 重新拉取），不入库
+datasets/
+_data/
+*_cache/
+
+# 调参 / 评测产物（可复现，不入库）
+reports/
+
+# 调参写入的配置备份
+config.json.bak
+config.tuned.json
+
+# Agent 工作区
+.workbuddy/
