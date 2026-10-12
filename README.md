@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.3.2（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.3（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -8,6 +8,8 @@
 > v2.2 补上「版式维度」与 12 大类车牌；v2.3 做召回分层与形近字纠错；
 > v2.3.1 修掉 4 个真 Bug（安全层覆盖、采集/识别解耦、模型校验三态）并补上 CI；
 > v2.3.2 专项提升军牌/警牌/白牌等特种号牌（语法补齐 + 红色字符判色）。
+> v2.3.3 补上启动入口（`python -m lpr`）、Windows 一键启动 `start.bat`
+> 与「环境与系统要求」说明，并修掉摄像头后端的跨平台硬编码。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -118,6 +120,108 @@ lpr predict ./photos/ --engine deep --mask --report out/   # 报告落盘同样�
 - **双层牌处理**（借鉴 [YOLO26-plate](https://github.com/we0091234/Chinese_license_plate_detection_recognition)）：**先在候选阶段判定单/双层**，只有双层才拆行拼接——单行牌不做无谓的双倍识别。拆行用「裁左右边框 + 行投影」，不依赖固定比例，对带框车牌与任意宽高比都成立
 - **输入来源**：图片 / 目录（可递归）/ 视频文件 / 摄像头流 / numpy 数组
 - **输出格式**：控制台 / JSON / CSV / 标注图片 / 标注视频
+
+## 环境与系统要求
+
+### 最低要求
+
+| 项目 | 要求 | 说明 |
+|---|---|---|
+| **操作系统** | **Windows 10 (1809+) / Windows 11（64 位）**、Linux（64 位） | 兼容矩阵见下 |
+| **Python** | **3.10 ~ 3.13，必须 64 位** | `requires-python = ">=3.10"`；CI 覆盖 3.10 / 3.11 / 3.12 / 3.13 |
+| **CPU** | 任意 x86-64 | **不需要 GPU、不需要 CUDA**，推理全程纯 CPU |
+| **内存** | 可用 2 GB 以上 | deep 引擎加载 OCR 模型约占 500 MB |
+| **磁盘** | 约 30 MB | 仓库自带 SVM 模型 8 MB；OCR 模型 13.7 MB 随 wheel 分发 |
+| **网络** | **只在 `pip install` 时需要** | 装完后从识别到界面**全程离线**（模型都已随包分发） |
+| **摄像头** | 可选 | 只有「摄像头实时识别」功能需要 |
+
+### 系统兼容矩阵
+
+| 系统 | 命令行 | 图形界面 | 说明 |
+|---|---|---|---|
+| **Windows 11（64 位）** | ✅ | ✅ | 本项目开发与实测环境（Python 3.13） |
+| **Windows 10 1809+（64 位）** | ✅ | ✅ | CI 在 `windows-latest` 上覆盖 Python 3.12 |
+| Windows 10（1809 之前，如 1607 / LTSB 2016） | ⚠️ | ⚠️ | 未验证。PySide6（Qt 6.6+）官方要求 1809 以上 |
+| Windows 8.1（64 位） | ⚠️ | ❌ | Python 3.13 官方仍支持 8.1，但 Qt 6 已放弃 → **界面用不了** |
+| Windows 7 | ❌ | ❌ | 见下「为什么 Windows 7 / 8 / XP 不行」 |
+| Windows XP | ❌ | ❌ | 同上 |
+| 32 位 Windows（任意版本） | ⚠️ | ❌ | Qt 6 没有 32 位 Windows 版 → 界面用不了 |
+| **Linux（Ubuntu 20.04+ / 22.04+，64 位）** | ✅ | ✅ | CI 覆盖 Ubuntu × Python 3.10~3.13；摄像头走 V4L2 |
+| macOS 12+ | ✅ | ✅ | Qt 6 要求 macOS 12+；本项目**没有** macOS 的 CI 覆盖 |
+
+### 为什么 Windows 7 / 8 / XP 不行
+
+两道**互相独立**的硬门槛，任何一道都足以挡住：
+
+1. **Python 本体**。CPython 的规则是「只在 Microsoft 仍处于延长支持期的 Windows 上支持」。
+   最后一个能装到 **Windows 7** 的版本是 **Python 3.8**（官方文档原话：
+   *"If you require Windows 7 support, please install Python 3.8"*）；
+   **Windows XP** 更早，止步于 **Python 3.4**。
+   而本项目要求 `Python >= 3.10` —— 门直接关着。
+2. **图形界面**。界面基于 **PySide6（Qt 6）**，官方支持矩阵是 **64 位 Windows 10 1809+**。
+   Qt 6 明确放弃了 Windows 7 / 8 / 8.1 以及**全部 32 位 Windows**
+   （要 Win7 就得退到 Qt 5.15，要 8.1 就得退到 Qt 5.12）。
+
+> 想让它在 Win7 上跑，属于一次**独立移植**，不是改个配置就行：要降到 Python 3.8 +
+> `PySide2`(Qt5) + 旧版 numpy/opencv，还得放宽 `requires-python`，并自行确认那些旧
+> wheel 在 Win7 上装得上。本仓库没做、也没承诺这条路径。
+
+### 四种启动方式
+
+**① 双击（Windows 最省事）**
+
+```
+双击 start.bat
+```
+
+脚本会自动：找 Python（优先 `LPR_PYTHON` 环境变量 → `.venv` → `py -3` → `python`）
+→ 校验是否 ≥ 3.10 → 缺 PySide6 就装 → 启动界面。带参数运行则透传给命令行：
+
+```bat
+start.bat engines                                :: 查看引擎状态
+start.bat predict car.jpg --engine deep          :: 单图识别
+start.bat --help                                 :: 命令行用法
+```
+
+**② 装成命令（推荐长期使用）**
+
+```bash
+pip install -e ".[deep,gui]"    # 一次性：CV + 深度学习引擎 + 图形界面
+lpr gui                          # 开界面
+lpr predict car.jpg --engine deep
+```
+
+**③ 不安装，直接用源码**
+
+```bash
+# Windows
+set PYTHONPATH=src
+# Linux / macOS
+export PYTHONPATH=src
+
+python -m lpr                    # 无参数 → 直接开图形界面
+python -m lpr predict car.jpg --engine deep
+python -m lpr.cli --help         # 只看命令行用法
+```
+
+**④ 最小安装（只要命令行 + CV 引擎，零额外依赖）**
+
+```bash
+pip install -e .
+lpr engines                      # 看看当前环境有哪些引擎可用
+```
+
+### 引擎与依赖的对应关系
+
+| 引擎 / 功能 | 额外依赖 | 装完后还要下载模型吗 |
+|---|---|---|
+| `cv`（基础） | 无（numpy + opencv + Pillow） | 否，`models/*.dat` 随仓库分发 |
+| `deep`（推荐） | `rapidocr-onnxruntime` | 否，模型 13.7 MB 在 wheel 内 |
+| `deep-paddle` | `paddleocr` + `paddlepaddle` | **首次运行会联网下载模型**，离线环境别用 |
+| 图形界面 | `PySide6>=6.5` | 否 |
+
+> **纯离线环境请用 `deep`（RapidOCR）**：它和 `cv` 一样装完即用；
+> `deep-paddle` 首次运行需要联网拉模型。
 
 ## 安装
 
@@ -245,6 +349,7 @@ src/lpr/
 ├── plate_rules.py      # 车牌语法规则：格式识别、纠错、合法性评分
 ├── tracker.py          # 跨帧多车牌跟踪（IoU + 号码一致性投票）
 ├── cli.py              # 命令行入口
+├── __main__.py         # python -m lpr 入口（无参数直接开界面）
 ├── py.typed            # 声明本包带类型标注（下游可依赖）
 ├── engines/
 │   ├── base.py         # 引擎抽象接口
@@ -256,7 +361,7 @@ src/lpr/
 │   └── deep_engine.py  # 深度学习引擎（定位引导 + 纯识别加速 + 双行牌）
 ├── ui/
 │   ├── window.py       # PySide6 主窗口（已接入安全层）
-│   └── worker.py       # 采集合识别分离的线程（CameraWorker + _RecognizeThread）
+│   └── worker.py       # 采集与识别分离的线程（CameraWorker + _RecognizeThread）
 └── utils/
     ├── image.py        # 图像 IO（中文路径 / EXIF）、标注绘制（Pillow 中文字体）
     ├── security.py     # 安全层：Limits / PrivacyPolicy / 脱敏 / 限流 / 模型校验三态
@@ -275,7 +380,8 @@ tools/
 └── make_regression_baseline.py  # 生成真实样张行为快照基线
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
-tests/                  # 527 项 pytest 测试（含 tests/baselines/ 行为基线）
+start.bat               # Windows 一键启动（找解释器 → 校验版本 → 装 GUI 依赖 → 开界面）
+tests/                  # 538 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 ```
@@ -284,7 +390,7 @@ docs/UPGRADE.md         # 与原项目的详细对比
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 527 项单元/集成测试
+pytest tests/ -q                                    # 538 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）

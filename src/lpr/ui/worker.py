@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from pathlib import Path
@@ -171,6 +172,22 @@ class _RecognizeThread(QThread):
                 self.msleep(50)
 
 
+def camera_backend() -> int:
+    """返回当前平台的摄像头采集后端（OpenCV ``CAP_*`` 常量）。
+
+    ``cv2.CAP_DSHOW``（DirectShow）是 **Windows 专有**后端。v2.3.2 之前这里是
+    无条件 ``cv2.VideoCapture(index, cv2.CAP_DSHOW)``，等于把摄像头功能悄悄
+    钉死在 Windows —— 在 Linux/macOS 上会把 DirectShow 当后端去打开设备，
+    必然失败（而项目其余部分与 CI 都是跨平台的）。
+
+    Windows 上保留 DirectShow（对部分 USB 摄像头比默认的 MSMF 更稳）；
+    其它平台交给 OpenCV 自选后端（``CAP_ANY``，Linux 走 V4L2 / macOS 走 AVFoundation）。
+    """
+    import cv2
+
+    return cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+
+
 class CameraWorker(QThread):
     """摄像头采集线程（**只采集，不识别**）。
 
@@ -269,7 +286,7 @@ class CameraWorker(QThread):
     def run(self) -> None:
         import cv2
 
-        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        cap = cv2.VideoCapture(self.camera_index, camera_backend())
         if not cap.isOpened():
             self.camera_error.emit(f"无法打开摄像头 {self.camera_index}")
             return

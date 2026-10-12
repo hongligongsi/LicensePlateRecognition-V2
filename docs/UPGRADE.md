@@ -897,3 +897,67 @@ skip"，`--skip 60 --limit 100` 实际只评 40 张且与调参段重叠。已�
 * 新增 `tests/test_special_plates.py`（49 项）：严格校验/抽取/纠错/打分/
   红色信号（合成 ROI 四分支）/cv 混淆修正，全部通过；
 * 测试总数 478 → **527**；行为基线（11 张真实样张）零变化。
+
+## 十一、启动入口与系统兼容性（v2.3.3）
+
+> 起因：用户问「怎么启动 / 兼容什么系统 / Win7 8 10 11 XP 支持吗」。
+> 三个问题都答不上来，说明**文档缺了一节**；顺着查还揪出三处与"启动"直接相关的实际缺口。
+
+### 11.1 查出并修复的问题
+
+| # | 问题 | 影响 |
+|---|---|---|
+| 1 | 没有 `src/lpr/__main__.py` | `python -m lpr` 报 "No module named lpr.__main__"，只能写 `python -m lpr.cli`；不装 console script 时没有干净入口 |
+| 2 | 没有 Windows 启动脚本 | 用户得自己解决"用哪个 python""依赖装没装""PYTHONPATH 怎么设" |
+| 3 | `CameraWorker.run()` 无条件传 `cv2.CAP_DSHOW` | DirectShow 是 **Windows 专有**后端，Linux/macOS 上必然打不开摄像头——而项目其余部分与 CI 都是跨平台的，等于把摄像头悄悄钉死在 Windows |
+| 4 | README 缺「环境与系统要求」 | 系统兼容性只能靠猜 |
+
+### 11.2 改动
+
+* 新增 `src/lpr/__main__.py`：无参数 → 注入 `gui`（"clone 下来就想看效果"的最短路径）；
+  带参数 → 原样透传给 CLI 子命令。于是 `python -m lpr` 开界面、
+  `python -m lpr predict a.jpg --engine deep` 走命令行。
+* 新增 `start.bat`（Windows 一键启动）：按 `LPR_PYTHON` → `.venv` → `py -3` → `python`
+  找解释器，校验 ≥ 3.10，缺 PySide6 就装，设好 `PYTHONPATH` 后启动；带参数透传给 CLI。
+* `ui/worker.py` 新增 `camera_backend()`：Windows 保留 DirectShow（对部分 USB 摄像头
+  比 MSMF 稳），其它平台交回 `CAP_ANY`（Linux → V4L2，macOS → AVFoundation）。
+* README 新增「环境与系统要求」：最低要求表、**系统兼容矩阵**、
+  「为什么 Win7 / 8 / XP 不行」、四种启动方式、引擎↔依赖对应表。
+
+### 11.3 关于 Windows 7 / 8 / XP（如实记录）
+
+不支持的结论建立在两道**互相独立**的硬门槛上：
+
+1. **CPython 侧**：官方只在 Microsoft 仍处延长支持期的 Windows 上支持。
+   最后一个能装到 Win7 的是 **Python 3.8**（官方原话："If you require Windows 7
+   support, please install Python 3.8"）；XP 止步 **Python 3.4**。
+   而本项目 `requires-python >= 3.10`。
+2. **Qt 侧**：PySide6（Qt 6）官方支持 **64 位 Windows 10 1809+**，明确放弃
+   Win7 / 8 / 8.1 与**全部 32 位 Windows**。
+
+Win8.1 的特殊性：Python 3.13 官方文档仍声明支持 8.1，但界面依赖的 Qt 6 已放弃
+→ **命令行理论可行（未验证）、图形界面一定不行**。
+
+想支持 Win7 属于独立移植（Python 3.8 + PySide2/Qt5 + 旧版 numpy/opencv +
+放宽 `requires-python`），本仓库未做也未承诺。
+
+### 11.4 踩到的坑
+
+**批处理文件不能写非 ASCII。** 第一版 `start.bat` 用中文写注释，`cmd` 按系统
+ANSI 代码页（GBK）解析 UTF-8 字节，中文被拆碎后**当成命令执行**，实测报出
+`'器（优先级最高），例如：' 不是内部或外部命令`。改为纯 ASCII + CRLF 后正常，
+并加护栏测试锁死。
+
+### 11.5 测试
+
+* 新增 `tests/test_launch_env.py`（11 项）：
+  * `python -m lpr` 入口存在、无参数注入 `gui`、参数透传（**真起子进程**验证）、
+    非法参数仍按 CLI 语义报错；
+  * `camera_backend()` 三平台分支（win32 / linux / darwin）；
+  * `worker.py` 源码不得出现无条件的 `VideoCapture(..., cv2.CAP_DSHOW)`；
+  * `start.bat` 必须存在、**纯 ASCII**、含 `PYTHONPATH=%~dp0src`、含版本下限校验、行尾 CRLF；
+  * README / UPGRADE 必须写明 Python ≥ 3.10。
+* 测试总数 527 → **538**，全部通过。
+
+实测（Windows 11 + Python 3.13.14）：`python -m lpr engines`、`start.bat engines`
+（含中文输出的子进程路径）均正常。

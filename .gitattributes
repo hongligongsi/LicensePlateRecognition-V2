@@ -1,0 +1,4 @@
+# 批处理脚本必须在**任何平台**检出时都是 CRLF：
+# cmd.exe 对 LF 行尾的容忍度不确定，而 CI 是在 Linux 上做检出再跑测试的。
+*.bat text eol=crlf
+*.cmd text eol=crlf
