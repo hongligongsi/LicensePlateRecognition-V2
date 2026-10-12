@@ -77,8 +77,10 @@ class TestIoUMatrix:
         assert iou_matrix(a, b)[0, 0] == pytest.approx(50 / 150, abs=1e-5)
 
     def test_shape_with_empty_side(self):
-        assert iou_matrix(np.zeros((0, 4), np.float32),
-                          np.zeros((3, 4), np.float32)).shape == (0, 3)
+        assert iou_matrix(np.zeros((0, 4), np.float32), np.zeros((3, 4), np.float32)).shape == (
+            0,
+            3,
+        )
 
     def test_many_to_many_shape(self):
         a = np.zeros((4, 4), np.float32)
@@ -271,8 +273,9 @@ class TestSearchGridSanity:
             for key, values in grid.items():
                 default = getattr(base, key)
                 if isinstance(default, tuple):
-                    assert all(isinstance(v, tuple) and len(v) == len(default)
-                               for v in values), f"{key} 候选必须是等长 tuple"
+                    assert all(isinstance(v, tuple) and len(v) == len(default) for v in values), (
+                        f"{key} 候选必须是等长 tuple"
+                    )
                 elif isinstance(default, float):
                     assert all(isinstance(v, float) for v in values), f"{key} 必须是 float"
                 elif isinstance(default, int):

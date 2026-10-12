@@ -16,6 +16,7 @@
 基线更新方式：``python tools/make_regression_baseline.py --write``
 （**确认行为变化是预期之内**才更新）
 """
+
 from __future__ import annotations
 
 import json
@@ -89,11 +90,7 @@ def test_all_repo_samples_readable(current):
 
 def test_locate_still_finds_candidates(current):
     """定位器在真实样张上必须仍能找到候选（防止整体失效）。"""
-    no_cand = [
-        r["path"]
-        for r in current["records"]
-        if r.get("readable") and not r.get("top_bbox")
-    ]
+    no_cand = [r["path"] for r in current["records"] if r.get("readable") and not r.get("top_bbox")]
     assert not no_cand, f"这些样张定位不到任何候选: {no_cand}"
 
 
@@ -102,37 +99,31 @@ class TestBehaviorUnchanged:
 
     def test_top_bbox_not_drifted(self, baseline, current):
         drifted = []
-        for base, now in zip(baseline["records"], current["records"]):
+        for base, now in zip(baseline["records"], current["records"], strict=False):
             if not base.get("top_bbox") or not now.get("top_bbox"):
                 continue
             iou = _iou(base["top_bbox"], now["top_bbox"])
             if iou < MIN_IOU:
                 drifted.append(
-                    f"{base['path']}: IoU={iou:.3f} "
-                    f"基线={base['top_bbox']} 现在={now['top_bbox']}"
+                    f"{base['path']}: IoU={iou:.3f} 基线={base['top_bbox']} 现在={now['top_bbox']}"
                 )
         assert not drifted, (
-            "top 候选框发生漂移（若为预期改动，请重新生成基线）：\n  "
-            + "\n  ".join(drifted)
+            "top 候选框发生漂移（若为预期改动，请重新生成基线）：\n  " + "\n  ".join(drifted)
         )
 
     def test_candidate_count_not_drifted(self, baseline, current):
         drifted = []
-        for base, now in zip(baseline["records"], current["records"]):
+        for base, now in zip(baseline["records"], current["records"], strict=False):
             delta = abs(base["n_candidates"] - now["n_candidates"])
             if delta > CAND_TOLERANCE:
-                drifted.append(
-                    f"{base['path']}: {base['n_candidates']} -> {now['n_candidates']}"
-                )
+                drifted.append(f"{base['path']}: {base['n_candidates']} -> {now['n_candidates']}")
         assert not drifted, "候选数量发生明显变化：\n  " + "\n  ".join(drifted)
 
     def test_top_color_not_drifted(self, baseline, current):
         drifted = []
-        for base, now in zip(baseline["records"], current["records"]):
+        for base, now in zip(baseline["records"], current["records"], strict=False):
             if base.get("top_color") != now.get("top_color"):
-                drifted.append(
-                    f"{base['path']}: {base.get('top_color')} -> {now.get('top_color')}"
-                )
+                drifted.append(f"{base['path']}: {base.get('top_color')} -> {now.get('top_color')}")
         assert not drifted, "top 候选底色判定变了：\n  " + "\n  ".join(drifted)
 
 
@@ -243,10 +234,21 @@ def _fake_report(fitness: float):
     recall30 = (fitness - 0.25) / 0.5
     assert 0.0 <= recall30 <= 1.0, "测试用的 fitness 需落在 0.25~0.75 区间"
     return Report(
-        n_images=6, n_gt=6, n_pred=6, tp=6,
-        precision=0.9, recall=0.8, f1=0.85, mean_iou=0.7,
-        center_err=0.0, top1_iou=0.8, top1_hit=0.9,
-        recall30=recall30, recall50=0.0, recall70=0.0, center_hit=0.9,
+        n_images=6,
+        n_gt=6,
+        n_pred=6,
+        tp=6,
+        precision=0.9,
+        recall=0.8,
+        f1=0.85,
+        mean_iou=0.7,
+        center_err=0.0,
+        top1_iou=0.8,
+        top1_hit=0.9,
+        recall30=recall30,
+        recall50=0.0,
+        recall70=0.0,
+        center_hit=0.9,
         seconds=0.1,
     )
 
@@ -259,8 +261,12 @@ def _write_baseline(path: Path, fitness: float, n_samples: int = 6) -> None:
                 "n_samples": n_samples,
                 "iou_threshold": 0.5,
                 "metrics": {
-                    "fitness": fitness, "recall30": 0.5, "recall50": 0.5,
-                    "mean_iou": 0.7, "precision": 0.9, "center_hit": 0.9,
+                    "fitness": fitness,
+                    "recall30": 0.5,
+                    "recall50": 0.5,
+                    "mean_iou": 0.7,
+                    "precision": 0.9,
+                    "center_hit": 0.9,
                 },
             },
             ensure_ascii=False,
@@ -319,9 +325,7 @@ def test_check_baseline_missing_file(tmp_path):
     sys.path.insert(0, str(ROOT / "tools"))
     from eval_locate import _check_against_baseline
 
-    assert _check_against_baseline(
-        _namespace(tmp_path / "nope.json"), _fake_report(0.6), 6
-    ) == 1
+    assert _check_against_baseline(_namespace(tmp_path / "nope.json"), _fake_report(0.6), 6) == 1
 
 
 def test_eval_locate_exposes_baseline_flags():

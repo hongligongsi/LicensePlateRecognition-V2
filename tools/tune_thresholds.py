@@ -54,14 +54,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
-import numpy as np  # noqa: E402
+import numpy as np
 
-from lpr.config import EngineConfig, LocateConfig  # noqa: E402
-from lpr.engines.deep_engine import measure_layout  # noqa: E402
-from lpr.engines.locate import detect_color, locate_plates  # noqa: E402
-from lpr.types import PlateColor  # noqa: E402
-from lpr.utils.image import imread  # noqa: E402
-
+from lpr.config import EngineConfig, LocateConfig
+from lpr.engines.deep_engine import measure_layout
+from lpr.engines.locate import detect_color, locate_plates
+from lpr.types import PlateColor
+from lpr.utils.image import imread
 
 # ------------------------------------------------------------------ 参数空间
 
@@ -130,10 +129,10 @@ def _geom_ok(w: int, h: int) -> bool:
 
 # ------------------------------------------------------------------ 评估
 
-def evaluate(images: list[np.ndarray], cfg: LocateConfig,
-             engine_cfg: EngineConfig) -> Metrics:
+
+def evaluate(images: list[np.ndarray], cfg: LocateConfig, engine_cfg: EngineConfig) -> Metrics:
     """在给定参数下评估一组图片，返回指标。"""
-    hit = 0            # 至少有一个候选的图片数
+    hit = 0  # 至少有一个候选的图片数
     cand_counts: list[int] = []
     n_cand = 0
     n_colored = 0
@@ -186,18 +185,17 @@ def evaluate(images: list[np.ndarray], cfg: LocateConfig,
     n = max(1, len(images))
     locate_rate = hit / n
     focus = focus_sum / n
-    decisive = (
-        (n_colored + n_layout) / (2.0 * n_cand) if n_cand > 0 else 0.0
-    )
+    decisive = (n_colored + n_layout) / (2.0 * n_cand) if n_cand > 0 else 0.0
     geom = n_geom / n_cand if n_cand > 0 else 0.0
-    score = (0.35 * locate_rate + 0.20 * focus
-             + 0.15 * decisive + 0.30 * geom)
+    score = 0.35 * locate_rate + 0.20 * focus + 0.15 * decisive + 0.30 * geom
 
-    return Metrics(locate_rate, focus, decisive, geom, score,
-                   len(images), n_cand, n_colored, n_layout, n_geom)
+    return Metrics(
+        locate_rate, focus, decisive, geom, score, len(images), n_cand, n_colored, n_layout, n_geom
+    )
 
 
 # ------------------------------------------------------------------ 主流程
+
 
 def load_images(directory: Path, limit: int) -> list[np.ndarray]:
     paths = sorted(directory.glob("*.jpg"))[:limit]
@@ -214,8 +212,7 @@ def main() -> int:
     ap.add_argument("image_dir", help="图片目录（如 datasets/ccpd_raw）")
     ap.add_argument("-n", "--num", type=int, default=200, help="使用前 N 张图")
     ap.add_argument("--grid", choices=["quick", "full"], default="quick")
-    ap.add_argument("--apply", action="store_true",
-                    help="把最优参数写入 config.tuned.json")
+    ap.add_argument("--apply", action="store_true", help="把最优参数写入 config.tuned.json")
     ap.add_argument("-o", "--out", default="out/tuning", help="报告输出目录")
     args = ap.parse_args()
 
@@ -246,7 +243,7 @@ def main() -> int:
     print("\n[基线|调参集] ", end="", flush=True)
     t0 = time.time()
     baseline = evaluate(train, base, engine_cfg)
-    print(json.dumps(baseline.as_dict()), f"({time.time()-t0:.0f}s)")
+    print(json.dumps(baseline.as_dict()), f"({time.time() - t0:.0f}s)")
 
     keys = list(grid)
     combos = list(itertools.product(*(grid[k] for k in keys)))
@@ -255,7 +252,7 @@ def main() -> int:
     results = []
     t0 = time.time()
     for i, combo in enumerate(combos, 1):
-        overrides = dict(zip(keys, combo))
+        overrides = dict(zip(keys, combo, strict=False))
         try:
             cfg = replace(base, **overrides)
         except (ValueError, TypeError):
@@ -265,8 +262,7 @@ def main() -> int:
         if i % 20 == 0 or i == len(combos):
             best = max(results, key=lambda r: r[0]) if results else None
             eta = (time.time() - t0) / i * (len(combos) - i)
-            print(f"  {i}/{len(combos)}  当前最优 {best[0]:.4f}  剩余约 {eta:.0f}s",
-                  flush=True)
+            print(f"  {i}/{len(combos)}  当前最优 {best[0]:.4f}  剩余约 {eta:.0f}s", flush=True)
 
     if not results:
         print("没有有效结果")
@@ -280,11 +276,13 @@ def main() -> int:
     val_base = evaluate(val, base, engine_cfg)
     val_best = evaluate(val, replace(base, **best_params), engine_cfg)
 
-    print(f"\n{'='*72}")
+    print(f"\n{'=' * 72}")
     print(f"{'':10}{'调参集':>12}{'验证集':>12}")
     print(f"{'基线':10}{baseline.score:>12.4f}{val_base.score:>12.4f}")
     print(f"{'最优':10}{best_score:>12.4f}{val_best.score:>12.4f}")
-    print(f"{'提升':10}{best_score-baseline.score:>+12.4f}{val_best.score-val_base.score:>+12.4f}")
+    print(
+        f"{'提升':10}{best_score - baseline.score:>+12.4f}{val_best.score - val_base.score:>+12.4f}"
+    )
 
     print("\n最优参数:")
     for k, v in best_params.items():
@@ -293,8 +291,10 @@ def main() -> int:
     print("\nTop 10 组合（调参集）:")
     for s, p, m in results[:10]:
         ps = " ".join(f"{k}={v}" for k, v in p.items())
-        print(f"  {s:.4f}  loc={m.locate_rate:.3f} foc={m.focus:.3f} "
-              f"dec={m.decisive:.3f} geo={m.geom:.3f}  {ps}")
+        print(
+            f"  {s:.4f}  loc={m.locate_rate:.3f} foc={m.focus:.3f} "
+            f"dec={m.decisive:.3f} geo={m.geom:.3f}  {ps}"
+        )
 
     out_dir = ROOT / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -311,15 +311,16 @@ def main() -> int:
         "val_baseline": val_base.as_dict(),
         "best": {
             "score": best_score,
-            "params": {k: (list(v) if isinstance(v, tuple) else v)
-                       for k, v in best_params.items()},
+            "params": {k: (list(v) if isinstance(v, tuple) else v) for k, v in best_params.items()},
             "train_metrics": best_m.as_dict(),
             "val_metrics": val_best.as_dict(),
         },
         "top10": [
-            {"score": s, "params": {k: (list(v) if isinstance(v, tuple) else v)
-                                    for k, v in p.items()},
-             "metrics": m.as_dict()}
+            {
+                "score": s,
+                "params": {k: (list(v) if isinstance(v, tuple) else v) for k, v in p.items()},
+                "metrics": m.as_dict(),
+            }
             for s, p, m in results[:10]
         ],
     }
@@ -333,8 +334,7 @@ def main() -> int:
         cfg_path = apply_locate_params(best_params, ROOT)
         print(f"已写入调优配置: {cfg_path}")
         print(f"  （原文件已备份为 {cfg_path.name}.bak）")
-        print("  注意：config.json 的 engine.locate 会覆盖代码默认值，"
-              "下次运行即生效。")
+        print("  注意：config.json 的 engine.locate 会覆盖代码默认值，下次运行即生效。")
 
     return 0
 

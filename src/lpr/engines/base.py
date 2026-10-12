@@ -41,7 +41,7 @@ class BaseEngine(abc.ABC):
     def load(self) -> None:
         """加载模型/建立会话。耗时操作应放在这里，而不是每次识别时。"""
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: B027 —— 有意做成可选钩子，子类按需覆写
         """释放资源，默认无操作。"""
 
     @property
@@ -81,7 +81,7 @@ class BaseEngine(abc.ABC):
 
     # ------------------------------------------------------------------ 杂项
 
-    def __enter__(self) -> "BaseEngine":
+    def __enter__(self) -> BaseEngine:
         self.ensure_ready()
         return self
 

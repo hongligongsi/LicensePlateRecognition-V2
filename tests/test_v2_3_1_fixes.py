@@ -10,25 +10,27 @@
 
 这些测试的用意是：任何一项被改回原样，都必须有测试失败。
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from lpr.api import Recognizer  # noqa: E402
-from lpr.config import Config, EngineConfig, LocateConfig, SecurityConfig  # noqa: E402
-from lpr.engines import registry as engine_registry  # noqa: E402
-from lpr.engines.base import BaseEngine  # noqa: E402
-from lpr.plate_rules import is_valid  # noqa: E402
-from lpr.types import PlateColor, PlateResult  # noqa: E402
-from lpr.utils.security import (  # noqa: E402
+from lpr.api import Recognizer
+from lpr.config import Config, EngineConfig, LocateConfig, SecurityConfig
+from lpr.engines import registry as engine_registry
+from lpr.engines.base import BaseEngine
+from lpr.plate_rules import is_valid
+from lpr.types import PlateColor, PlateResult
+from lpr.utils.security import (
     Limits,
     MaskingFilter,
     ModelStatus,
@@ -48,7 +50,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "lpr"
 class _Recorder:
     """记录调用情况的可控假引擎。"""
 
-    calls: list[np.ndarray] = []
+    calls: ClassVar[list[np.ndarray]] = []
     delay: float = 0.0
     text: str = "京A12345"
 
@@ -87,7 +89,7 @@ def registered(monkeypatch):
     _Recorder.calls = []
     _Recorder.delay = 0.0
     engines = {
-        "fakea": _make_fake("fakea", ""),        # 永远不命中
+        "fakea": _make_fake("fakea", ""),  # 永远不命中
         "fakeb": _make_fake("fakeb", "京A12345"),  # 稳定命中
         "fakec": _make_fake("fakec", "京A12345"),
     }
@@ -366,9 +368,7 @@ def test_model_hashes_survive_config_roundtrip(tmp_path):
 
 def test_config_json_can_override_model_hashes(tmp_path):
     p = tmp_path / "config.json"
-    p.write_text(
-        '{"security": {"model_hashes": {"custom.dat": "abc"}}}', encoding="utf-8"
-    )
+    p.write_text('{"security": {"model_hashes": {"custom.dat": "abc"}}}', encoding="utf-8")
     cfg = Config.load(p)
     assert cfg.security.model_hashes == {"custom.dat": "abc"}
 

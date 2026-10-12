@@ -48,12 +48,23 @@ def test_every_color_has_label_and_swatch() -> None:
 @pytest.mark.parametrize(
     "alias,expected",
     [
-        ("黑色", PlateColor.BLACK), ("黑", PlateColor.BLACK), ("black", PlateColor.BLACK),
-        ("蓝色", PlateColor.BLUE), ("蓝", PlateColor.BLUE), ("blue", PlateColor.BLUE),
-        ("绿色", PlateColor.GREEN), ("绿", PlateColor.GREEN), ("green", PlateColor.GREEN),
-        ("白色", PlateColor.WHITE), ("白", PlateColor.WHITE), ("white", PlateColor.WHITE),
-        ("黄色", PlateColor.YELLOW), ("黄", PlateColor.YELLOW), ("yellow", PlateColor.YELLOW),
-        ("危险品", PlateColor.HAZMAT), ("危险品运输", PlateColor.HAZMAT),
+        ("黑色", PlateColor.BLACK),
+        ("黑", PlateColor.BLACK),
+        ("black", PlateColor.BLACK),
+        ("蓝色", PlateColor.BLUE),
+        ("蓝", PlateColor.BLUE),
+        ("blue", PlateColor.BLUE),
+        ("绿色", PlateColor.GREEN),
+        ("绿", PlateColor.GREEN),
+        ("green", PlateColor.GREEN),
+        ("白色", PlateColor.WHITE),
+        ("白", PlateColor.WHITE),
+        ("white", PlateColor.WHITE),
+        ("黄色", PlateColor.YELLOW),
+        ("黄", PlateColor.YELLOW),
+        ("yellow", PlateColor.YELLOW),
+        ("危险品", PlateColor.HAZMAT),
+        ("危险品运输", PlateColor.HAZMAT),
     ],
 )
 def test_parse_color_accepts_chinese_and_english(alias: str, expected: PlateColor) -> None:
@@ -257,9 +268,13 @@ def test_batch_color_summary_counts_each_color() -> None:
 
     batch = BatchOutcome(
         outcomes=[
-            RecognizeOutcome(source="a.jpg", results=[
-                _plate_result(PlateColor.YELLOW), _plate_result(PlateColor.HAZMAT),
-            ]),
+            RecognizeOutcome(
+                source="a.jpg",
+                results=[
+                    _plate_result(PlateColor.YELLOW),
+                    _plate_result(PlateColor.HAZMAT),
+                ],
+            ),
             RecognizeOutcome(source="b.jpg", results=[_plate_result(PlateColor.YELLOW)]),
         ],
         started=0.0,

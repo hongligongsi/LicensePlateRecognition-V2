@@ -6,6 +6,7 @@
 无参数时默认进界面，这是"刚 clone 下来就想看效果"的最短路径；
 若想看命令行用法，用 ``python -m lpr.cli --help``（那里无参数会打印帮助而不是开界面）。
 """
+
 from __future__ import annotations
 
 import sys

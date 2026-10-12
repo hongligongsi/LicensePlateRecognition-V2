@@ -9,6 +9,8 @@
 * ``ensure_bgr`` 输入归一化（灰度/四通道/浮点/NaN/None 不抛异常）
 """
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 
@@ -20,7 +22,6 @@ from lpr.engines.deep_engine import (
 )
 from lpr.plate_rules import correct, describe, is_valid, loose_match
 from lpr.utils.image import ensure_bgr
-
 
 # --------------------------------------------------------------- _extract_plate
 
@@ -113,7 +114,7 @@ class TestGroupDoubleFragments:
     def test_merge_jing_san(self):
         eng = self._engine()
         boxes = [
-            (_quad(200, 300, 250, 320), "京三", 0.65),   # 上行
+            (_quad(200, 300, 250, 320), "京三", 0.65),  # 上行
             (_quad(190, 330, 260, 360), "A5331", 0.69),  # 下行
             (_quad(10, 30, 120, 50), "有车大师", 0.76),  # 无关文本
         ]
@@ -139,12 +140,12 @@ class TestEnsureBgr:
         "img",
         [
             None,
-            np.zeros((1, 1, 3), np.uint8),            # 过小
-            np.zeros((50, 50), np.uint8),             # 灰度
-            np.zeros((50, 50, 1), np.uint8),          # 单通道 3 维
-            np.zeros((50, 50, 4), np.uint8),          # BGRA
-            np.random.rand(30, 30, 3).astype(np.float32),   # float32
-            np.full((30, 30, 3), np.nan),             # float64 + NaN
+            np.zeros((1, 1, 3), np.uint8),  # 过小
+            np.zeros((50, 50), np.uint8),  # 灰度
+            np.zeros((50, 50, 1), np.uint8),  # 单通道 3 维
+            np.zeros((50, 50, 4), np.uint8),  # BGRA
+            np.random.rand(30, 30, 3).astype(np.float32),  # float32
+            np.full((30, 30, 3), np.nan),  # float64 + NaN
             np.random.randint(0, 65535, (20, 20, 3), np.uint16),  # uint16
             "not an image",
         ],
@@ -168,13 +169,13 @@ class TestEnsureBgr:
 class TestPipelineOnHostileInputs:
     """边界输入进入管线函数不抛异常。"""
 
-    hostile = [
+    hostile: ClassVar[list] = [
         np.zeros((1, 1, 3), np.uint8),
         np.zeros((50, 50), np.uint8),
         np.zeros((50, 50, 4), np.uint8),
         np.random.rand(30, 30, 3).astype(np.float32),
         np.full((30, 30, 3), np.nan),
-        np.random.randint(0, 255, (20, 400, 3), np.uint8),   # 极端宽高比
+        np.random.randint(0, 255, (20, 400, 3), np.uint8),  # 极端宽高比
         np.random.randint(0, 255, (3000, 20, 3), np.uint8),
     ]
 

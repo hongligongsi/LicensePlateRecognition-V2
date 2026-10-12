@@ -16,14 +16,15 @@
     for plate in rec.recognize_video("parking.mp4"):
         print(plate.text)
 """
+
 from __future__ import annotations
 
 import csv
 import json
 import time
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator
 
 import numpy as np
 
@@ -102,7 +103,7 @@ class RecognizeOutcome:
         return scrub_value(payload, policy)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "RecognizeOutcome":
+    def from_dict(cls, data: dict) -> RecognizeOutcome:
         """从 :meth:`to_dict` 的结果还原（多进程批量识别用）。
 
         ``roi`` 不会被回传（跨进程传图像开销太大），还原后为 ``None``。
@@ -144,7 +145,7 @@ class BatchOutcome:
                 seen[r.text] = seen.get(r.text, 0) + 1
         return sorted(seen, key=lambda k: -seen[k])
 
-    def keep_colors(self, colors: Iterable[PlateColor]) -> "BatchOutcome":
+    def keep_colors(self, colors: Iterable[PlateColor]) -> BatchOutcome:
         """就地按底色过滤，只保留指定底色的车牌。
 
         支持五种底色（黑/蓝/绿/白/黄）与危险品运输牌。
@@ -192,9 +193,7 @@ class BatchOutcome:
         policy = privacy or PrivacyPolicy()
         with path.open("w", newline="", encoding="utf-8-sig") as fp:
             writer = csv.writer(fp)
-            writer.writerow(
-                ["来源", "号码", "颜色", "类型", "置信度", "引擎", "bbox", "耗时ms"]
-            )
+            writer.writerow(["来源", "号码", "颜色", "类型", "置信度", "引擎", "bbox", "耗时ms"])
             for o in self.outcomes:
                 # 来源路径里可能嵌着车牌号（如 京AD77972_20260101.jpg），同样要打码
                 source = mask_plate(o.source, policy) if policy.mask_output else o.source
@@ -269,7 +268,7 @@ class Recognizer:
         if self.config.engine.mode != "cascade":
             return None
         infos = self._available_map()
-        for name in CASCADE_ORDER:          # ("cv", "deep")
+        for name in CASCADE_ORDER:  # ("cv", "deep")
             if name != self.engine_name and infos.get(name, {}).get("available"):
                 return name
         return None
@@ -282,7 +281,9 @@ class Recognizer:
             for name in ("deep", "cv"):
                 if infos.get(name, {}).get("available"):
                     return name
-            raise EngineUnavailable("没有可用的识别引擎，请安装 opencv-python 或 rapidocr-onnxruntime")
+            raise EngineUnavailable(
+                "没有可用的识别引擎，请安装 opencv-python 或 rapidocr-onnxruntime"
+            )
         if requested == "cascade":
             # 级联模式以 deep 为最终识别者，cv 只做定位
             if infos.get("deep", {}).get("available"):
@@ -324,8 +325,10 @@ class Recognizer:
         except (SecurityError, OSError) as exc:
             logger.warning("拒绝处理 %s: %s", source, exc)
             return RecognizeOutcome(
-                source=str(source), elapsed_ms=(time.perf_counter() - started) * 1000,
-                engine=self.engine_name, warnings=[str(exc)],
+                source=str(source),
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                engine=self.engine_name,
+                warnings=[str(exc)],
             )
 
         results = self._predict(img)
@@ -386,7 +389,7 @@ class Recognizer:
 
     def recognize_many(
         self,
-        sources: list[str | Path],
+        sources: Sequence[str | Path],
         annotate_dir: str | Path | None = None,
         workers: int = 1,
     ) -> BatchOutcome:
@@ -417,9 +420,7 @@ class Recognizer:
 
         want_parallel = workers > 1 or (workers == 0 and len(sources) > 1)
         if want_parallel and not parallel_is_worthwhile(len(sources), workers):
-            logger.info(
-                "批量仅 %d 个文件，不足以摊平行进程固定成本，仍走串行", len(sources)
-            )
+            logger.info("批量仅 %d 个文件，不足以摊平行进程固定成本，仍走串行", len(sources))
             want_parallel = False
 
         if want_parallel:
@@ -432,7 +433,9 @@ class Recognizer:
             self._write_annotations(sources, batch, annotate_dir)
         return batch
 
-    def _recognize_parallel(self, sources: list[str | Path], workers: int) -> list[RecognizeOutcome]:
+    def _recognize_parallel(
+        self, sources: list[str | Path], workers: int
+    ) -> list[RecognizeOutcome]:
         """多进程批量识别：把配置和文件分片丢给子进程，结果按原序拼回。"""
         # 数组输入无法序列化给子进程（也没必要：它已经解码过了）
         array_sources = [s for s in sources if isinstance(s, np.ndarray)]
@@ -465,12 +468,12 @@ class Recognizer:
 
     def _write_annotations(
         self,
-        sources: list[str | Path],
+        sources: Sequence[str | Path],
         batch: BatchOutcome,
         annotate_dir: str | Path,
     ) -> None:
         """把标注图写到目标目录（在父进程做，与是否多进程无关）。"""
-        for src, outcome in zip(sources, batch.outcomes):
+        for src, outcome in zip(sources, batch.outcomes, strict=False):
             if isinstance(src, np.ndarray) or not outcome.results:
                 continue
             try:
@@ -526,7 +529,7 @@ class Recognizer:
         import cv2
 
         tracker = tracker or MultiPlateTracker()
-        src: str | int = int(source) if str(source).isdigit() else str(source)
+        src: str | int = int(str(source)) if str(source).isdigit() else str(source)
         cap = cv2.VideoCapture(src)
         if not cap.isOpened():
             raise RuntimeError(f"无法打开视频源: {source}")
@@ -536,9 +539,8 @@ class Recognizer:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         writer = None
         if output_video:
-            writer = cv2.VideoWriter(
-                str(output_video), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
-            )
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
+            writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
 
         frame_idx = 0
         try:
@@ -555,8 +557,7 @@ class Recognizer:
                         logger.warning("帧 %d 识别失败: %s", frame_idx, exc)
                         results = []
 
-                    for plate in tracker.update(results):
-                        yield plate
+                    yield from tracker.update(results)
 
                     if writer is not None:
                         annotated = draw_result(frame, tracker.active())
@@ -570,9 +571,7 @@ class Recognizer:
             if writer is not None:
                 writer.release()
 
-        logger.info(
-            "视频处理完成: %d 帧, 确认 %d 个车牌", frame_idx, len(tracker.all_reported())
-        )
+        logger.info("视频处理完成: %d 帧, 确认 %d 个车牌", frame_idx, len(tracker.all_reported()))
 
     # ------------------------------------------------------------------ 工具
 
@@ -600,4 +599,4 @@ class Recognizer:
         }
 
 
-__all__ = ["Recognizer", "RecognizeOutcome", "BatchOutcome", "CASCADE_ORDER"]
+__all__ = ["CASCADE_ORDER", "BatchOutcome", "RecognizeOutcome", "Recognizer"]

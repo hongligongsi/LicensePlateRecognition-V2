@@ -8,10 +8,12 @@
 
 这是"更全面"能力的核心：不再把每次识别当作孤立的单张图片处理。
 """
+
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from .plate_rules import plate_score
 from .types import PlateResult
@@ -74,7 +76,7 @@ def _similar(a: str, b: str) -> bool:
         return False
     if len(a) != len(b):
         return False
-    diff = sum(1 for x, y in zip(a, b) if x != y)
+    diff = sum(1 for x, y in zip(a, b, strict=False) if x != y)
     return diff <= 2
 
 
@@ -86,7 +88,7 @@ class Track:
     #: 号码 → 累计票数
     votes: dict[str, float] = field(default_factory=dict)
     bbox: tuple[int, int, int, int] | None = None
-    color: object = None
+    color: Any = None  # PlateColor（延迟赋值，保持宽松以兼容部分识别结果缺色）
     #: 首帧时间戳
     first_seen: float = field(default_factory=time.time)
     #: 最后出现时间
@@ -94,7 +96,7 @@ class Track:
     #: 出现帧数
     hits: int = 0
     #: 最佳 ROI 快照
-    best_roi: object = None
+    best_roi: Any = None  # np.ndarray | None
     best_conf: float = 0.0
 
     @property
@@ -240,7 +242,10 @@ class MultiPlateTracker:
                 newly.append(track.to_result())
                 logger.info(
                     "确认新车牌 %s（出现 %d 次, 一致率 %.2f, 合法性 %.2f）",
-                    text, track.hits, track.hit_rate, score,
+                    text,
+                    track.hits,
+                    track.hit_rate,
+                    score,
                 )
 
         return newly

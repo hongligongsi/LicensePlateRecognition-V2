@@ -104,7 +104,7 @@ def _trim_rows(binary: np.ndarray) -> np.ndarray:
     if row_sum.size == 0:
         return binary
 
-    threshold = (row_sum.min() + row_sum.mean()) / 2
+    threshold = (np.min(row_sum) + np.mean(row_sum)) / 2
     peaks = find_waves(threshold, row_sum)
     if not peaks:
         return binary
@@ -115,9 +115,7 @@ def _trim_rows(binary: np.ndarray) -> np.ndarray:
     return trimmed if trimmed.size else binary
 
 
-def _merge_to_count(
-    spans: list[tuple[int, int]], target: int, width: int
-) -> list[tuple[int, int]]:
+def _merge_to_count(spans: list[tuple[int, int]], target: int, width: int) -> list[tuple[int, int]]:
     """通过合并相邻区间，把区间数降到 ``target``。
 
     合并策略：每次合并间隙最小的两个相邻区间（汉字之间的缝通常比字符内部的缝宽）。
@@ -201,7 +199,7 @@ def separate_characters(
         return Segmentation(chars=[], binary=binary)
 
     # 阈值取 (最小值 + 均值) / 5，比原版更宽松 —— 原版用 /5 是同一思路
-    threshold = (col_sum.min() + col_sum.mean()) / 5
+    threshold = (np.min(col_sum) + np.mean(col_sum)) / 5
     spans = find_waves(threshold, col_sum)
     if not spans:
         return Segmentation(chars=[], binary=binary)
@@ -211,8 +209,10 @@ def separate_characters(
         max_width = max(s[1] - s[0] for s in spans)
         if spans[0][0] == 0 and spans[0][1] - spans[0][0] < max_width / 3:
             spans.pop(0)
-        if spans and spans[-1][1] >= col_sum.size - 1 and (
-            spans[-1][1] - spans[-1][0] < max_width / 3
+        if (
+            spans
+            and spans[-1][1] >= col_sum.size - 1
+            and (spans[-1][1] - spans[-1][0] < max_width / 3)
         ):
             spans.pop()
 
@@ -248,9 +248,9 @@ def separate_characters(
 
 
 __all__ = [
+    "STANDARD_CHAR_COUNT",
     "Segmentation",
-    "separate_characters",
     "binarize_plate",
     "find_waves",
-    "STANDARD_CHAR_COUNT",
+    "separate_characters",
 ]

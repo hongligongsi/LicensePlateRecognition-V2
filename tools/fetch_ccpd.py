@@ -56,7 +56,7 @@ def download_batch(indices: list[int], cache: Path) -> tuple[int, int, list[str]
                 ok += 1
             else:
                 errs.append(f"{i}:空文件")
-        except BaseException as exc:  # noqa: BLE001 - 故意抓 BaseException
+        except BaseException as exc:
             errs.append(f"{i}:{type(exc).__name__}")
     return ok, len(indices), errs
 
@@ -77,8 +77,7 @@ def main() -> int:
 
     while i < args.total and batches < args.max_batch:
         end = min(i + args.batch, args.total)
-        idx = [j for j in range(i, end)
-               if not (OUT / f"sample_{j}.jpg").exists()]
+        idx = [j for j in range(i, end) if not (OUT / f"sample_{j}.jpg").exists()]
         if not idx:
             i = end
             continue
@@ -91,11 +90,10 @@ def main() -> int:
             ok, n, errs = download_batch(idx, cache)
             total_ok += ok
             have = len(list(OUT.glob("sample_*.jpg")))
-            log(f"批次 {i}-{end - 1}  本批 {ok}/{n}  累计落盘 {have}  "
-                f"用时 {time.time() - t0:.0f}s")
+            log(f"批次 {i}-{end - 1}  本批 {ok}/{n}  累计落盘 {have}  用时 {time.time() - t0:.0f}s")
             if errs:
                 log(f"    失败 {len(errs)}: {errs[:4]}")
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             log(f"批次 {i}-{end - 1} 整体中断: {type(exc).__name__}: {exc}")
         finally:
             shutil.rmtree(cache, ignore_errors=True)
@@ -104,8 +102,7 @@ def main() -> int:
         batches += 1
 
     have = len(list(OUT.glob("sample_*.jpg")))
-    log(f"结束: 本轮新下 {total_ok} 张, 目录共 {have} 张, "
-        f"耗时 {time.time() - t0:.0f}s")
+    log(f"结束: 本轮新下 {total_ok} 张, 目录共 {have} 张, 耗时 {time.time() - t0:.0f}s")
     return 0
 
 

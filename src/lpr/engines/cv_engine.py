@@ -23,16 +23,16 @@ from pathlib import Path
 import numpy as np
 
 from ..config import EngineConfig
-from ..plate_rules import identify_format
+from ..plate_rules import MILITARY_HEADS, identify_format
 from ..types import PlateColor, PlateResult
 from ..utils.image import imread
 from ..utils.logging_setup import get_logger
 from .base import BaseEngine, EngineUnavailable
 from .locate import locate_plates, refine_by_color
 from .segment import separate_characters
-from ..plate_rules import MILITARY_HEADS
 from .svm_classifier import (
     PROVINCES,
+    SVMCharacterClassifier,
     build_alphanum_classifier,
     build_province_classifier,
 )
@@ -65,11 +65,10 @@ def _fix_confusions(text: str) -> str:
 
     chars = list(text)
     # 第 2 位必须是字母：数字 0→O 是错的（O 不合法），应改成相邻合法字母
-    if chars[0] in PROVINCES or chars[0] in MILITARY_HEADS:
-        if chars[1].isdigit():
-            # 数字 0/1/2/3... 被识别成第 2 位时，最可能是 O/I/Z 的误判
-            mapping = {"0": "D", "1": "J", "2": "Z", "5": "S", "8": "B", "6": "G"}
-            chars[1] = mapping.get(chars[1], "A")
+    if (chars[0] in PROVINCES or chars[0] in MILITARY_HEADS) and chars[1].isdigit():
+        # 数字 0/1/2/3... 被识别成第 2 位时，最可能是 O/I/Z 的误判
+        mapping = {"0": "D", "1": "J", "2": "Z", "5": "S", "8": "B", "6": "G"}
+        chars[1] = mapping.get(chars[1], "A")
 
     # I、O 在车牌第 2 位以后的字母位不出现，替换为易混淆的数字
     for i in range(1, len(chars)):
@@ -121,8 +120,8 @@ class CVEngine(BaseEngine):
         self.config = config or EngineConfig()
         self.cfg = self.config.locate
         self.models_dir = Path(models_dir) if models_dir else _default_models_dir()
-        self._alnum = None
-        self._province = None
+        self._alnum: SVMCharacterClassifier | None = None
+        self._province: SVMCharacterClassifier | None = None
 
     # -------------------------------------------------------------- 可用性
 
@@ -156,16 +155,20 @@ class CVEngine(BaseEngine):
         alnum_path = self.models_dir / "svm.dat"
         prov_path = self.models_dir / "svmchinese.dat"
 
-        self._alnum = build_alphanum_classifier(alnum_path)
-        self._province = build_province_classifier(prov_path)
+        alnum = build_alphanum_classifier(alnum_path)
+        prov = build_province_classifier(prov_path)
 
         try:
-            self._alnum.load()
-            self._province.load()
+            alnum.load()
+            prov.load()
         except FileNotFoundError as exc:
             raise EngineUnavailable(
                 f"{exc}\n模型文件缺失。可从原项目下载 svm.dat / svmchinese.dat 放入 {self.models_dir}"
             ) from exc
+        self._alnum = alnum
+        self._province = prov
+        self._alnum = alnum
+        self._province = prov
 
         self._ready = True
 
@@ -249,6 +252,7 @@ class CVEngine(BaseEngine):
 
     def _recognize(self, chars: list[np.ndarray]) -> tuple[str, list[float]]:
         """识别字符序列：第 1 个走省份分类器，其余走数字/字母分类器。"""
+        assert self._province is not None and self._alnum is not None, "引擎尚未加载"
         if not chars:
             return "", []
 

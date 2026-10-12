@@ -32,7 +32,9 @@ _LOCAL = {
 }
 
 
-def _rotate(deg: float, center: tuple[float, float] = (300.0, 300.0)) -> dict[str, tuple[float, float]]:
+def _rotate(
+    deg: float, center: tuple[float, float] = (300.0, 300.0)
+) -> dict[str, tuple[float, float]]:
     """按 cv2 的角度约定（正角为逆时针）旋转四个角点。"""
     theta = np.deg2rad(deg)
     cos, sin = np.cos(theta), np.sin(theta)
@@ -64,7 +66,7 @@ class TestRegressionAgainst45DegreeCliff:
     @pytest.mark.parametrize("deg", [46, 50, 60, 75, 89, -46, -50, -89])
     def test_long_edge_is_horizontal(self, deg: int):
         truth = _rotate(deg)
-        tl, tr, br, bl = _order_quad(_shuffled(truth, seed=1))
+        tl, tr, _br, bl = _order_quad(_shuffled(truth, seed=1))
         top = float(np.linalg.norm(tr - tl))
         left = float(np.linalg.norm(bl - tl))
         assert top > left, f"{deg}° 时上边仍被配到短边上（会 Warp 成竖图）"
@@ -138,7 +140,7 @@ class TestPerspectiveQuad:
     def test_trapezoid_keeps_long_top(self):
         # 下边比上边略宽（近大远小），整体无明显旋转
         quad = np.float32([[20, 10], [200, 14], [215, 80], [5, 76]])
-        tl, tr, br, bl = _order_quad(quad)
+        tl, tr, _br, bl = _order_quad(quad)
         assert np.allclose(tl, [20, 10], atol=1.5)
         assert np.allclose(tr, [200, 14], atol=1.5)
         assert tr[0] > tl[0]  # 上边指向右侧

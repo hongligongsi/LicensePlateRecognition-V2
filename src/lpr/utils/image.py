@@ -14,7 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..types import COLOR_SWATCH, PlateResult
+from ..types import COLOR_SWATCH, PlateColor, PlateResult
 
 
 class ImageReadError(RuntimeError):
@@ -84,7 +84,7 @@ def resize_max_side(img: np.ndarray, max_side: int) -> tuple[np.ndarray, float]:
         return img, 1.0
 
     scale = max_side / longest
-    new_size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+    new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
     return cv2.resize(img, new_size, interpolation=cv2.INTER_LANCZOS4), scale
 
 
@@ -163,7 +163,7 @@ def _pillow_font(size: int):
     from PIL import ImageFont
 
     candidates = [
-        "C:/Windows/Fonts/msyh.ttc",    # 微软雅黑
+        "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
         "C:/Windows/Fonts/simhei.ttf",  # 黑体
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/System/Library/Fonts/PingFang.ttc",
@@ -178,7 +178,7 @@ def _pillow_font(size: int):
 
 def _draw_chinese_labels(
     canvas: np.ndarray,
-    items: list[tuple[tuple[int, int, int, int], "PlateColor", str]],  # noqa: F821
+    items: list[tuple[tuple[int, int, int, int], PlateColor, str]],
 ) -> None:
     from PIL import Image, ImageDraw
 
@@ -187,7 +187,7 @@ def _draw_chinese_labels(
     font_size = max(16, round(max(canvas.shape[:2]) / 55))
     font = _pillow_font(font_size)
 
-    for (x, y, w, _h), color, label in items:
+    for (x, y, _w, _h), color, label in items:
         r, g, b = color.value.rgb if hasattr(color.value, "rgb") else _swatch_rgb(color)
         pad = max(2, font_size // 6)
         left, top = x, max(0, y - font_size - pad * 3)
@@ -208,7 +208,7 @@ def _draw_chinese_labels(
     canvas[:] = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
 
-def _swatch_rgb(color: "PlateColor") -> tuple[int, int, int]:  # noqa: F821
+def _swatch_rgb(color: PlateColor) -> tuple[int, int, int]:
     from ..types import COLOR_SWATCH
 
     b, g, r = COLOR_SWATCH.get(color, (160, 160, 160))
@@ -223,12 +223,12 @@ def to_display_rgb(img: np.ndarray) -> np.ndarray:
 
 
 __all__ = [
+    "ImageReadError",
+    "draw_result",
+    "ensure_bgr",
+    "ensure_odd",
     "imread",
     "imwrite",
     "resize_max_side",
-    "ensure_odd",
-    "ensure_bgr",
-    "draw_result",
     "to_display_rgb",
-    "ImageReadError",
 ]

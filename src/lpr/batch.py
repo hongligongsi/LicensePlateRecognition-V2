@@ -18,11 +18,13 @@
 5. **ROI 不回传**：``PlateResult.roi`` 是整块车牌图，跨进程序列化开销极大。
    ``workers > 1`` 时结果里的 ``roi`` 一律为 ``None``；需要 ROI 用 ``workers=1``。
 """
+
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Sequence
+from typing import Any
 
 from .utils.logging_setup import get_logger
 
@@ -87,7 +89,7 @@ def _init_worker(engine: str, config_payload: dict) -> None:
         # 子进程只负责算号码，不需要 ROI 图像，省掉一次拷贝
         cfg.security.keep_roi = False
         _WORKER["rec"] = Recognizer(engine=engine, config=cfg)
-    except Exception as exc:  # noqa: BLE001 - 初始化失败要让父进程看到原因
+    except Exception as exc:
         logger.error("子进程初始化失败: %s", exc)
         _WORKER["error"] = str(exc)
 
@@ -112,7 +114,7 @@ def _run_chunk(job: tuple[int, list[str]]) -> tuple[int, list[dict]]:
         try:
             # 逐条隔离：单张图异常不能拖垮整批
             out.append(rec.recognize(path).to_dict())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             out.append(
                 {
                     "source": path,
@@ -162,9 +164,7 @@ def run_parallel(
 
     workers = resolve_workers(workers, len(sources))
     chunks = make_chunks(sources, workers)
-    logger.info(
-        "并行批量识别: %d 个文件 / %d 进程 / %d 分片", len(sources), workers, len(chunks)
-    )
+    logger.info("并行批量识别: %d 个文件 / %d 进程 / %d 分片", len(sources), workers, len(chunks))
 
     # spawn：Windows 上默认即 spawn；显式指定可避免 Linux 上 fork 出
     # 持有全局锁（INFERENCE_LOCK）的副本导致死锁

@@ -14,8 +14,8 @@ from lpr.plate_rules import (
 )
 from lpr.utils.security import PrivacyPolicy, mask_plate
 
-
 # --------------------------------------------------------------- 格式识别
+
 
 @pytest.mark.parametrize(
     "text,expected",
@@ -74,10 +74,20 @@ def test_plate_format_match_method() -> None:
 
 # --------------------------------------------------------------- 合法性
 
+
 @pytest.mark.parametrize(
     "text",
-    ["京A12345", "京A1234警", "京AD77972", "使123456", "粤Z1234港",
-     "京A123学", "京A1234挂", "京V12345", "军A12345"],
+    [
+        "京A12345",
+        "京A1234警",
+        "京AD77972",
+        "使123456",
+        "粤Z1234港",
+        "京A123学",
+        "京A1234挂",
+        "京V12345",
+        "军A12345",
+    ],
 )
 def test_is_valid_true(text: str) -> None:
     assert is_valid(text), f"{text} 应合法"
@@ -86,10 +96,10 @@ def test_is_valid_true(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "ABC1234",        # 无省份汉字
-        "京I12345",       # I 不作发牌机关代号
-        "京O12345",       # O 不作发牌机关代号
-        "京A12",          # 长度不足
+        "ABC1234",  # 无省份汉字
+        "京I12345",  # I 不作发牌机关代号
+        "京O12345",  # O 不作发牌机关代号
+        "京A12",  # 长度不足
         "京A1234567890",  # 过长
         "",
         "12345",
@@ -125,6 +135,7 @@ def test_same_shape_plates_are_indistinguishable() -> None:
 
 
 # --------------------------------------------------------------- 纠错
+
 
 def test_correct_confuses_letter_i_to_digit() -> None:
     fixed, changes = correct("京AI5619")
@@ -163,6 +174,7 @@ def test_correct_reports_reason_for_unknown_head() -> None:
 
 
 # --------------------------------------------------------------- 脱敏
+
 
 def test_mask_plate_hides_middle_but_keeps_ends() -> None:
     policy = PrivacyPolicy(mask_output=True)

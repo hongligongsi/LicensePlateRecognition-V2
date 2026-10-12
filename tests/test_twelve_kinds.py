@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """12 类车牌支持 + 双层版式维度的测试。
 
 覆盖用户点名的 12 类：
@@ -10,7 +9,10 @@
 其中 7/8/11 与 1/2/3 的**号码**相同（双层是版式维度，不是号码维度），
 因此这些用例同时验证版式字段的表达。
 """
+
 from __future__ import annotations
+
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -37,7 +39,7 @@ from lpr.types import (
 class TestTwelvePlateKinds:
     """用户点名的 12 类车牌，逐项验证类型判定。"""
 
-    CASES = [
+    CASES: ClassVar[list[tuple[str, str, str]]] = [
         ("单行蓝牌", "京A12345", "普通民用"),
         ("单行黄牌", "京A12345", "普通民用"),
         ("新能源车牌", "京AD77972", "新能源"),
@@ -77,8 +79,8 @@ class TestCivilAviation:
 
     def test_digit_count(self):
         assert is_valid("民航A1234")
-        assert not is_valid("民航A123")     # 3 位数字不够
-        assert not is_valid("民航A12345")   # 5 位数字太多
+        assert not is_valid("民航A123")  # 3 位数字不够
+        assert not is_valid("民航A12345")  # 5 位数字太多
 
     def test_letters_not_allowed_in_serial(self):
         assert not is_valid("民航A12B4")
@@ -187,9 +189,7 @@ def _synth_plate(w: int, h: int, rows: int) -> np.ndarray:
             )
         for i in range(6):
             x = int(w * 0.08 + i * w * 0.15)
-            cv2.rectangle(
-                img, (x, int(h * 0.58)), (x + int(w * 0.1), int(h * 0.92)), (0, 0, 0), -1
-            )
+            cv2.rectangle(img, (x, int(h * 0.58)), (x + int(w * 0.1), int(h * 0.92)), (0, 0, 0), -1)
     return img
 
 
@@ -340,10 +340,11 @@ class TestResultFieldIntegrity:
 
         pytest.importorskip("rapidocr_onnxruntime")
 
+        import glob
+
         from lpr.config import EngineConfig
         from lpr.engines.deep_engine import DeepEngine
         from lpr.utils.image import imread
-        import glob
 
         eng = DeepEngine(EngineConfig())
         try:

@@ -1,4 +1,5 @@
 """单元测试：配置、类型、工具函数。运行: pytest tests/ -v"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -43,7 +44,7 @@ class TestConfig:
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("LPR_ENGINE", "deep")
-        cfg = Config.load(tmp_path_none := "/nonexistent/config.json")
+        cfg = Config.load(_tmp_path_none := "/nonexistent/config.json")
         assert cfg.engine.default == "deep"
 
 
@@ -59,9 +60,7 @@ class TestTypes:
     def test_to_dict_serializable(self):
         import json
 
-        res = PlateResult(
-            text="京A12345", color=PlateColor.BLUE, bbox=(1, 2, 3, 4), confidence=0.8
-        )
+        res = PlateResult(text="京A12345", color=PlateColor.BLUE, bbox=(1, 2, 3, 4), confidence=0.8)
         payload = json.dumps(res.to_dict(), ensure_ascii=False)
         assert "京A12345" in payload
 

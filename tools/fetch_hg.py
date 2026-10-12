@@ -35,10 +35,15 @@ def list_files(prefix: str, api) -> list[str]:
     page = 1
     while True:
         try:
-            fs = api.get_dataset_files(repo_id=REPO, revision="master",
-                                       root_path=prefix, recursive=False,
-                                       page_number=page, page_size=500)
-        except Exception as exc:  # noqa: BLE001
+            fs = api.get_dataset_files(
+                repo_id=REPO,
+                revision="master",
+                root_path=prefix,
+                recursive=False,
+                page_number=page,
+                page_size=500,
+            )
+        except Exception as exc:
             log(f"  列目录 {prefix} 第 {page} 页失败: {type(exc).__name__}")
             break
         if not fs:
@@ -55,7 +60,9 @@ def main() -> int:
     ap.add_argument("--out", default="datasets/hg", help="输出根目录（相对项目根）")
     ap.add_argument("--batch", type=int, default=25, help="每批文件数")
     ap.add_argument(
-        "--limit", type=int, default=0,
+        "--limit",
+        type=int,
+        default=0,
         help="只取前 N 对（0=全部）。做小规模验证时用，避免下满 300+ 张",
     )
     args = ap.parse_args()
@@ -67,13 +74,14 @@ def main() -> int:
     for d in (img_dir, lab_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    from modelscope.hub.api import HubApi
     from modelscope import dataset_file_download
+    from modelscope.hub.api import HubApi
 
     api = HubApi()
     log("列出文件清单 ...")
-    images = [p for p in list_files("test/images", api) if p.lower().endswith(
-        (".jpg", ".jpeg", ".png"))]
+    images = [
+        p for p in list_files("test/images", api) if p.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
     labels = [p for p in list_files("test/labels", api) if p.endswith(".txt")]
     log(f"清单: {len(images)} 张图, {len(labels)} 个标注")
 
@@ -95,7 +103,7 @@ def main() -> int:
     ok_img = ok_lab = 0
     i = 0
     while i < len(pairs):
-        chunk = pairs[i:i + args.batch]
+        chunk = pairs[i : i + args.batch]
         cache = cache_root / f"b{i}"
         shutil.rmtree(cache, ignore_errors=True)
         cache.mkdir(parents=True, exist_ok=True)
@@ -108,7 +116,7 @@ def main() -> int:
                     if Path(p).exists() and Path(p).stat().st_size > 500:
                         shutil.move(str(p), str(dst))
                         ok_img += 1
-                except BaseException as exc:  # noqa: BLE001
+                except BaseException as exc:
                     log(f"  图失败 {rel}: {type(exc).__name__}")
             ldst = lab_dir / Path(lab).name
             if not ldst.exists():
@@ -117,18 +125,22 @@ def main() -> int:
                     if Path(p).exists():
                         shutil.move(str(p), str(ldst))
                         ok_lab += 1
-                except BaseException:  # noqa: BLE001
+                except BaseException:
                     pass
 
         shutil.rmtree(cache, ignore_errors=True)
         have_i = len(list(img_dir.glob("*")))
         have_l = len(list(lab_dir.glob("*.txt")))
-        log(f"批次 {i}-{i+len(chunk)-1}  图 {have_i}  标注 {have_l}  "
-            f"用时 {time.time()-t0:.0f}s")
+        log(
+            f"批次 {i}-{i + len(chunk) - 1}  图 {have_i}  标注 {have_l}  "
+            f"用时 {time.time() - t0:.0f}s"
+        )
         i += len(chunk)
 
-    log(f"完成: 新下图 {ok_img}, 新下标注 {ok_lab}, "
-        f"目录图 {len(list(img_dir.glob('*')))}, 标注 {len(list(lab_dir.glob('*.txt')))}")
+    log(
+        f"完成: 新下图 {ok_img}, 新下标注 {ok_lab}, "
+        f"目录图 {len(list(img_dir.glob('*')))}, 标注 {len(list(lab_dir.glob('*.txt')))}"
+    )
     log(f"评测命令: python tools/eval_locate.py {args.out}/test --grid quick")
     return 0
 

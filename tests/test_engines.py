@@ -1,4 +1,5 @@
 """端到端测试：需要模型文件与样张，缺失时自动跳过。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,9 +28,7 @@ def samples_available() -> bool:
     return all((SAMPLES / name).exists() for name in EXPECTED)
 
 
-requires_models = pytest.mark.skipif(
-    not models_available(), reason="缺少 svm.dat / svmchinese.dat"
-)
+requires_models = pytest.mark.skipif(not models_available(), reason="缺少 svm.dat / svmchinese.dat")
 
 
 class TestCVEngine:

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 from collections import deque
@@ -22,10 +23,9 @@ class RingBufferHandler(logging.Handler):
         self.records: deque[str] = deque(maxlen=capacity)
 
     def emit(self, record: logging.LogRecord) -> None:
-        try:
+        # pragma: no cover - 日志本身不应抛异常
+        with contextlib.suppress(Exception):
             self.records.append(self.format(record))
-        except Exception:  # pragma: no cover - 日志本身不应抛异常
-            pass
 
     def dump(self) -> list[str]:
         return list(self.records)
@@ -50,7 +50,9 @@ def setup_logging(level: str | int = "INFO") -> logging.Logger:
         )
         stream = logging.StreamHandler(sys.stderr)
         stream.setFormatter(fmt)
-        memory_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+        memory_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
+        )
         logger.addHandler(stream)
         logger.addHandler(memory_handler)
         logger.propagate = False
@@ -64,4 +66,4 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(f"{_LOGGER_NAME}.{name}" if name else _LOGGER_NAME)
 
 
-__all__ = ["setup_logging", "get_logger", "memory_handler", "RingBufferHandler"]
+__all__ = ["RingBufferHandler", "get_logger", "memory_handler", "setup_logging"]

@@ -29,7 +29,6 @@ from lpr.plate_rules import (
 )
 from lpr.types import PlateColor
 
-
 # --------------------------------------------------------------------------- #
 # 严格校验层：特种格式必须合法
 # --------------------------------------------------------------------------- #
@@ -66,8 +65,8 @@ class TestSpecialFormats:
     @pytest.mark.parametrize(
         "text",
         [
-            "WJ1234X",     # 太短：WJ 后既非省份也非足够位数
-            "军12345",     # 军牌第 2 位必须是字母
+            "WJ1234X",  # 太短：WJ 后既非省份也非足够位数
+            "军12345",  # 军牌第 2 位必须是字母
             "京A12345使",  # 使领馆不接受字母第 2 位（现行口径）
         ],
     )
@@ -220,11 +219,13 @@ def _make_white_plate_with_red_char(
     # 红色字符（末位，与字符等高）
     red_h = int(h * char_height_frac)
     red_w = 18
-    area = red_h * red_w
+    red_h * red_w
     need = int(red_ratio_target * h * w)
     red_w_actual = max(red_w, need // max(1, red_h))
     img[(h - red_h) // 2 : (h + red_h) // 2, w - red_w_actual - 5 : w - 5] = (
-        40, 40, 220,  # BGR 红色
+        40,
+        40,
+        220,  # BGR 红色
     )
     return img
 

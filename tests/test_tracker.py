@@ -119,10 +119,12 @@ def test_plate_matched_by_text_even_if_position_jumps() -> None:
 
 def test_two_plates_tracked_independently() -> None:
     tracker = MultiPlateTracker()
-    newly = tracker.update([
-        _res("京A12345", (0, 0, 200, 60)),
-        _res("沪B67890", (800, 400, 200, 60)),
-    ])
+    newly = tracker.update(
+        [
+            _res("京A12345", (0, 0, 200, 60)),
+            _res("沪B67890", (800, 400, 200, 60)),
+        ]
+    )
     assert len(newly) == 2
     assert {r.text for r in newly} == {"京A12345", "沪B67890"}
     assert tracker.stats["active_tracks"] == 2

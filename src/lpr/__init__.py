@@ -45,39 +45,39 @@ from .utils.security import (
 __version__ = "2.4.1"
 
 __all__ = [
-    # 高层 API
-    "Recognizer",
-    "RecognizeOutcome",
+    "COLOR_NAMES",
     "BatchOutcome",
-    # 配置
-    "Config",
-    "SecurityConfig",
-    "Limits",
-    "PrivacyPolicy",
-    "SecurityContext",
-    "SecurityError",
     # 引擎
     "CVEngine",
+    # 配置
+    "Config",
     "DeepEngine",
-    "get_engine",
-    "register_engine",
-    "available_engines",
-    "describe_engines",
+    "Limits",
+    "MultiPlateTracker",
     # 数据
     "PlateColor",
     "PlateResult",
-    "COLOR_NAMES",
-    "parse_color",
+    "PrivacyPolicy",
+    "RecognizeOutcome",
+    # 高层 API
+    "Recognizer",
+    "SecurityConfig",
+    "SecurityContext",
+    "SecurityError",
+    "__version__",
+    "available_engines",
     # 规则与跟踪
     "correct",
-    "is_valid",
-    "plate_score",
+    "describe_engines",
     "describe_plate",
-    "MultiPlateTracker",
-    "merge_same_image",
+    "get_engine",
+    "is_valid",
     # 安全工具
     "mask_plate",
-    "verify_model",
+    "merge_same_image",
+    "parse_color",
+    "plate_score",
+    "register_engine",
     "setup_logging",
-    "__version__",
+    "verify_model",
 ]

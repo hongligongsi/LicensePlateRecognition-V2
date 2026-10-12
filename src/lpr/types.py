@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -140,10 +141,7 @@ def parse_color(name: str) -> PlateColor:
     key = name.strip().lower()
     if key in COLOR_ALIASES:
         return COLOR_ALIASES[key]
-    raise ValueError(
-        f"未知车牌颜色 {name!r}，可选: "
-        + "、".join(COLOR_NAMES + ("危险品",))
-    )
+    raise ValueError(f"未知车牌颜色 {name!r}，可选: " + "、".join((*COLOR_NAMES, "危险品")))
 
 
 _COLOR_LABEL = {
@@ -212,7 +210,7 @@ class PlateResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PlateResult":
+    def from_dict(cls, data: dict[str, Any]) -> PlateResult:
         """从 :meth:`to_dict` 的结果还原。
 
         多进程批量识别要在父进程里重建结果对象，故需要这个反向入口。
@@ -220,21 +218,21 @@ class PlateResult:
         因此还原后 ``roi`` 恒为 ``None``。
         """
         color = PlateColor.UNKNOWN
-        try:
+        with contextlib.suppress(ValueError):
             color = PlateColor(data.get("color") or "unknown")
-        except ValueError:
-            pass
         layout = PlateLayout.UNKNOWN
-        try:
+        with contextlib.suppress(ValueError):
             layout = PlateLayout(data.get("layout") or "unknown")
-        except ValueError:
-            pass
         bbox = data.get("bbox")
+        bbox_fixed: tuple[int, int, int, int] | None = None
+        if bbox:
+            vals = [int(v) for v in bbox]
+            bbox_fixed = (vals[0], vals[1], vals[2], vals[3])
         return cls(
             text=str(data.get("text") or ""),
             color=color,
             layout=layout,
-            bbox=tuple(int(v) for v in bbox) if bbox else None,
+            bbox=bbox_fixed,
             roi=None,
             confidence=float(data.get("confidence") or 0.0),
             engine=str(data.get("engine") or ""),
@@ -247,7 +245,4 @@ class PlateResult:
             return "<未识别到车牌>"
         bbox = f" @{self.bbox}" if self.bbox else ""
         layout = "" if self.layout is PlateLayout.UNKNOWN else f" {self.layout.label}"
-        return (
-            f"{self.text} [{self.color.label}{layout}] "
-            f"置信度={self.confidence:.2f}{bbox}"
-        )
+        return f"{self.text} [{self.color.label}{layout}] 置信度={self.confidence:.2f}{bbox}"

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from dataclasses import asdict
@@ -67,9 +68,7 @@ def describe_engines() -> list[dict[str, Any]]:
 def create_engine(name: str, config: EngineConfig | None = None, **kwargs: Any) -> BaseEngine:
     """按名字新建引擎实例（不缓存）。"""
     if name not in _REGISTRY:
-        raise KeyError(
-            f"未知引擎 {name!r}，可用: {', '.join(available_engines()) or '（无）'}"
-        )
+        raise KeyError(f"未知引擎 {name!r}，可用: {', '.join(available_engines()) or '（无）'}")
     cls = _REGISTRY[name]
     # CVEngine / DeepEngine 都接受 config 关键字；其他引擎用 **kwargs 兜底
     try:
@@ -107,10 +106,8 @@ def get_engine(
     if name not in _INSTANCES or _INSTANCE_KEYS.get(name) != key:
         if name in _INSTANCES:
             # 配置变了：先关掉旧实例再重建，避免模型/句柄泄漏
-            try:
+            with contextlib.suppress(Exception):
                 _INSTANCES[name].close()
-            except Exception:  # noqa: BLE001 - 释放失败不应阻断重建
-                pass
         _INSTANCES[name] = create_engine(name, config, **kwargs)
         _INSTANCE_KEYS[name] = key
 
@@ -123,20 +120,18 @@ def get_engine(
 def clear_instances() -> None:
     """清空单例缓存（测试用）。"""
     for engine in _INSTANCES.values():
-        try:
+        with contextlib.suppress(Exception):
             engine.close()
-        except Exception:
-            pass
     _INSTANCES.clear()
     _INSTANCE_KEYS.clear()
 
 
 __all__ = [
-    "register_engine",
-    "available_engines",
-    "describe_engines",
-    "create_engine",
-    "get_engine",
-    "clear_instances",
     "INFERENCE_LOCK",
+    "available_engines",
+    "clear_instances",
+    "create_engine",
+    "describe_engines",
+    "get_engine",
+    "register_engine",
 ]

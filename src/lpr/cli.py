@@ -154,7 +154,7 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
     rec = _build_recognizer(args, cfg)
     rec.warmup()
 
-    targets = []
+    targets: list[Path] = []
     for raw in args.inputs:
         path = Path(raw)
         if path.is_dir():

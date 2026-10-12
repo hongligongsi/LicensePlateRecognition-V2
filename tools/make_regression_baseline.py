@@ -24,6 +24,7 @@
     # 只看看当前行为（不改基线）
     python tools/make_regression_baseline.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,8 +38,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from lpr.config import Config  # noqa: E402
-from lpr.engines.locate import locate_plates  # noqa: E402
+from lpr.config import Config
+from lpr.engines.locate import locate_plates
 
 #: 基线文件位置（进仓库）
 BASELINE_PATH = ROOT / "tests" / "baselines" / "real_samples.json"
@@ -54,9 +55,7 @@ def collect() -> list[Path]:
         root = ROOT / d
         if not root.is_dir():
             continue
-        files.extend(
-            sorted(p for p in root.iterdir() if p.suffix.lower() in IMG_EXT)
-        )
+        files.extend(sorted(p for p in root.iterdir() if p.suffix.lower() in IMG_EXT))
     return files
 
 
@@ -129,8 +128,7 @@ def main() -> int:
     readable = [r for r in snap["records"] if r.get("readable")]
     with_box = [r for r in readable if r.get("top_bbox")]
     print(
-        f"样张 {len(snap['records'])} 张（可读 {len(readable)}），"
-        f"其中定位到候选 {len(with_box)} 张"
+        f"样张 {len(snap['records'])} 张（可读 {len(readable)}），其中定位到候选 {len(with_box)} 张"
     )
     for r in snap["records"]:
         if not r.get("readable"):

@@ -13,6 +13,7 @@
     # 用来判断瓶颈到底在 CPU 配额还是在识别本身
     python tools/bench_workers.py --cpu-control
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,8 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from lpr.api import Recognizer  # noqa: E402
-from lpr.batch import _cpu_budget, resolve_workers  # noqa: E402
+from lpr.api import Recognizer
+from lpr.batch import _cpu_budget, resolve_workers
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 

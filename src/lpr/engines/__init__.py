@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 from .base import BaseEngine, EngineUnavailable
+
+# 导入即注册内置引擎（放在 registry 之后，避免循环导入）
+from .cv_engine import CVEngine
+from .deep_engine import DeepEngine
 from .registry import (
     INFERENCE_LOCK,
     available_engines,
@@ -16,23 +20,19 @@ from .registry import (
     register_engine,
 )
 
-# 导入即注册内置引擎（放在 registry 之后，避免循环导入）
-from .cv_engine import CVEngine  # noqa: E402
-from .deep_engine import DeepEngine  # noqa: E402
-
 register_engine(CVEngine)
 register_engine(DeepEngine)
 
 __all__ = [
+    "INFERENCE_LOCK",
     "BaseEngine",
-    "EngineUnavailable",
     "CVEngine",
     "DeepEngine",
-    "get_engine",
-    "create_engine",
-    "register_engine",
+    "EngineUnavailable",
     "available_engines",
-    "describe_engines",
     "clear_instances",
-    "INFERENCE_LOCK",
+    "create_engine",
+    "describe_engines",
+    "get_engine",
+    "register_engine",
 ]

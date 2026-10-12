@@ -19,12 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import cv2  # noqa: E402
-import numpy as np  # noqa: E402
+import cv2
+import numpy as np
 
-from lpr.config import LocateConfig  # noqa: E402
-from lpr.engines.locate import detect_color  # noqa: E402
-from lpr.types import PlateColor  # noqa: E402
+from lpr.config import LocateConfig
+from lpr.engines.locate import detect_color
+from lpr.types import PlateColor
 
 #: (文件名, 号码, 底色 BGR, 字色 BGR, 期望判定)
 SAMPLES = [
@@ -61,9 +61,7 @@ def _render(bg: tuple[int, int, int], fg: tuple[int, int, int], text: str) -> np
         cv2.circle(img, (70, 92), 5, fg, -1, cv2.LINE_AA)
 
     # 轻微高斯噪声：模拟真实拍摄，同时给定位器提供可用的边缘
-    noise = np.random.default_rng(seed=abs(hash(text)) % (2**31)).normal(
-        0, 6.0, img.shape
-    )
+    noise = np.random.default_rng(seed=abs(hash(text)) % (2**31)).normal(0, 6.0, img.shape)
     return np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
 
 

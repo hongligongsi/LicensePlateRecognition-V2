@@ -18,10 +18,11 @@ import hashlib
 import logging
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -59,7 +60,13 @@ class Limits:
     max_batch_files: int = 5000
     #: 允许的图片扩展名（白名单）
     allowed_extensions: tuple[str, ...] = (
-        ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+        ".webp",
+        ".tif",
+        ".tiff",
     )
     #: 是否对目录输入做软链接逃逸检查
     block_symlink_escape: bool = True
@@ -231,9 +238,7 @@ def scrub_value(value: Any, policy: PrivacyPolicy) -> Any:
 
     if isinstance(value, str):
         # 用正则整串替换，兼容字段本身就是一个号码、或号码嵌在长文本里的情况
-        return MaskingFilter._PLATE_RE.sub(
-            lambda m: mask_plate(m.group(0), policy), value
-        )
+        return MaskingFilter._PLATE_RE.sub(lambda m: mask_plate(m.group(0), policy), value)
     if isinstance(value, dict):
         return {k: scrub_value(v, policy) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -313,7 +318,7 @@ class ModelStatus(str, Enum):
     把"没检查"显示成了"检查通过"，是误导性的。
     """
 
-    OK = "ok"            #: 已配置哈希且校验通过
+    OK = "ok"  #: 已配置哈希且校验通过
     SKIPPED = "skipped"  #: 未配置哈希白名单，未做校验
     MISMATCH = "mismatch"  #: 已配置哈希但文件不匹配（疑似被篡改）
     MISSING = "missing"  #: 文件不存在
@@ -363,8 +368,7 @@ def check_model(path: str | Path, expected_sha256: str | None) -> ModelCheck:
         return ModelCheck(
             path.name,
             ModelStatus.SKIPPED,
-            "未配置哈希白名单，跳过完整性校验"
-            "（可在 config.json 的 security.model_hashes 中配置）",
+            "未配置哈希白名单，跳过完整性校验（可在 config.json 的 security.model_hashes 中配置）",
         )
 
     actual = sha256_file(path)
@@ -438,8 +442,7 @@ class SecurityContext:
     def verify_models(self, paths: Iterable[str | Path]) -> list[ModelCheck]:
         """批量校验模型文件，返回带三态状态的 :class:`ModelCheck` 列表。"""
         return [
-            check_model(p, self.model_hashes.get(Path(p).name))
-            for p in (Path(x) for x in paths)
+            check_model(p, self.model_hashes.get(Path(p).name)) for p in (Path(x) for x in paths)
         ]
 
 
@@ -462,21 +465,21 @@ def safe_output_path(base: str | Path, filename: str) -> Path:
 
 __all__ = [
     "Limits",
-    "PrivacyPolicy",
-    "SecurityContext",
-    "SecurityError",
     "MaskingFilter",
-    "RateLimiter",
-    "check_file",
-    "check_image",
-    "mask_plate",
-    "scrub_value",
-    "anonymize_path",
-    "sha256_file",
-    "verify_model",
-    "check_model",
     "ModelCheck",
     "ModelStatus",
+    "PrivacyPolicy",
+    "RateLimiter",
+    "SecurityContext",
+    "SecurityError",
+    "anonymize_path",
+    "check_file",
+    "check_image",
+    "check_model",
+    "mask_plate",
     "model_info",
     "safe_output_path",
+    "scrub_value",
+    "sha256_file",
+    "verify_model",
 ]

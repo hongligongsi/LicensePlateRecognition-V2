@@ -20,7 +20,6 @@ from lpr.engines.deep_engine import (
 )
 from lpr.types import PlateResult
 
-
 # ══════════════════════════════════════════════════ _clean_text
 
 
@@ -171,9 +170,7 @@ def test_iou_zero_area_boxes() -> None:
 
 
 def _res(text: str, bbox, conf: float = 0.9) -> PlateResult:
-    return PlateResult(
-        text=text, color=None, bbox=bbox, roi=None, confidence=conf, engine="test"
-    )
+    return PlateResult(text=text, color=None, bbox=bbox, roi=None, confidence=conf, engine="test")
 
 
 def test_dedupe_merges_overlapping_same_text() -> None:

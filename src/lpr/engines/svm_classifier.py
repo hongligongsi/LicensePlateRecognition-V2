@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -48,14 +49,42 @@ FEATURE_DIM = BIN_N * 4
 #: 省份简称顺序。**必须与训练 svmchinese.dat 时的顺序完全一致**，
 #: 否则识别出的汉字会整体错位。原版顺序即此，已核对。
 PROVINCES = [
-    "川", "鄂", "赣", "甘", "贵", "桂", "黑", "沪", "冀", "津",
-    "京", "吉", "辽", "鲁", "蒙", "闽", "宁", "青", "琼", "陕",
-    "苏", "晋", "皖", "湘", "新", "豫", "渝", "粤", "云", "藏", "浙",
+    "川",
+    "鄂",
+    "赣",
+    "甘",
+    "贵",
+    "桂",
+    "黑",
+    "沪",
+    "冀",
+    "津",
+    "京",
+    "吉",
+    "辽",
+    "鲁",
+    "蒙",
+    "闽",
+    "宁",
+    "青",
+    "琼",
+    "陕",
+    "苏",
+    "晋",
+    "皖",
+    "湘",
+    "新",
+    "豫",
+    "渝",
+    "粤",
+    "云",
+    "藏",
+    "浙",
 ]
 #: 训练时省份标签从 1001 开始（PROVINCE_START=1000，+1 偏移）
 PROVINCE_START = 1000
 #: 车牌第 2 位可用字母（I/O 被排除，避免与 1/0 混淆）
-LETTERS = [c for c in "ABCDEFGHJKLMNPQRSTUVWXYZ"]
+LETTERS = list("ABCDEFGHJKLMNPQRSTUVWXYZ")
 #: 普通车牌的字符集：数字 + 字母
 ALPHANUM = list("0123456789") + LETTERS
 
@@ -66,7 +95,7 @@ class SVMCharacterClassifier:
     def __init__(self, model_path: str | Path, label_map: dict[int, str]) -> None:
         self.model_path = Path(model_path)
         self.label_map = label_map
-        self._model: cv2.ml_SVM | None = None
+        self._model: Any = None  # cv2.ml.SVM 实例（opencv-python 缺少对应类型标注）
         self._lock = threading.Lock()
 
     def load(self) -> None:
@@ -75,7 +104,7 @@ class SVMCharacterClassifier:
             raise FileNotFoundError(f"SVM 模型不存在: {self.model_path}")
 
         with self._lock:
-            model = cv2.ml.SVM_load(str(self.model_path))
+            model = cv2.ml.SVM_load(str(self.model_path))  # type: ignore[attr-defined]
             if model is None or model.empty():
                 raise RuntimeError(f"SVM 模型加载失败（文件损坏或格式不兼容）: {self.model_path}")
 
@@ -132,7 +161,7 @@ class SVMCharacterClassifier:
 
             hists = [
                 np.bincount(b.ravel(), m.ravel(), minlength=BIN_N)
-                for b, m in zip(bin_cells, mag_cells)
+                for b, m in zip(bin_cells, mag_cells, strict=False)
             ]
             hist = np.hstack(hists).astype(np.float32)
 
@@ -146,7 +175,7 @@ class SVMCharacterClassifier:
 
         if not samples:
             return np.empty((0, FEATURE_DIM), np.float32)
-        return np.float32(samples)
+        return np.asarray(samples, dtype=np.float32)
 
     @staticmethod
     def normalize_char(patch: np.ndarray) -> np.ndarray:
@@ -173,7 +202,7 @@ class SVMCharacterClassifier:
 
         # 按高度先缩放到 20，保持长宽比
         scale = CHAR_SIZE / h
-        new_w = max(1, int(round(w * scale)))
+        new_w = max(1, round(w * scale))
         resized = cv2.resize(img, (new_w, CHAR_SIZE), interpolation=cv2.INTER_AREA)
 
         # 宽度不足就左右对称补黑边，超过就居中裁剪
@@ -191,9 +220,7 @@ class SVMCharacterClassifier:
 
     # -------------------------------------------------------------- 推理
 
-    def predict_batch(
-        self, patches: list[np.ndarray]
-    ) -> list[tuple[str, float]]:
+    def predict_batch(self, patches: list[np.ndarray]) -> list[tuple[str, float]]:
         """批量识别字符，返回 ``[(字符, 置信度), ...]``。
 
         置信度来自多分类 SVM 的决策值，用 softmax 归一化到 0~1。
@@ -259,20 +286,18 @@ def build_province_classifier(model_path: str | Path) -> SVMCharacterClassifier:
     训练时标签为 ``PROVINCE_START + 1 + provinces.index(pinyin)``，
     即 ``1001 + idx``，对应 ``PROVINCES[idx]``。
     """
-    label_map = {
-        PROVINCE_START + 1 + idx: name for idx, name in enumerate(PROVINCES)
-    }
+    label_map = {PROVINCE_START + 1 + idx: name for idx, name in enumerate(PROVINCES)}
     return SVMCharacterClassifier(model_path, label_map)
 
 
 __all__ = [
-    "SVMCharacterClassifier",
-    "build_alphanum_classifier",
-    "build_province_classifier",
-    "PROVINCES",
-    "LETTERS",
     "ALPHANUM",
     "CHAR_SIZE",
     "FEATURE_DIM",
+    "LETTERS",
+    "PROVINCES",
     "PROVINCE_START",
+    "SVMCharacterClassifier",
+    "build_alphanum_classifier",
+    "build_province_classifier",
 ]

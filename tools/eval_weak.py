@@ -21,6 +21,7 @@ CCPD 镜像的标注在重命名时被抹掉了（`sample_N.jpg`），公开带�
     python tools/eval_weak.py --images datasets/ccpd_raw --limit 60 \\
         --override '{"morph_kernel_ratio": [0.005, 0.021]}'
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,8 +37,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from lpr.config import Config, LocateConfig  # noqa: E402
-from lpr.plate_rules import is_valid  # noqa: E402
+from lpr.config import Config, LocateConfig
+from lpr.plate_rules import is_valid
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -74,9 +75,9 @@ def evaluate(files: list[Path], cfg: LocateConfig, engine: str) -> dict:
     eng = get_engine(engine, _engine_cfg(cfg))
 
     n = 0
-    n_cand = 0            # 至少有一个候选
-    n_valid = 0           # 产出了语法合法的号码
-    n_multi = 0           # 产出多个候选（可能过检）
+    n_cand = 0  # 至少有一个候选
+    n_valid = 0  # 产出了语法合法的号码
+    n_multi = 0  # 产出多个候选（可能过检）
     valid_texts: list[str] = []
     t0 = time.time()
 
@@ -87,7 +88,7 @@ def evaluate(files: list[Path], cfg: LocateConfig, engine: str) -> dict:
         n += 1
         try:
             results = eng.predict(img)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"  ! {path.name}: {exc}", file=sys.stderr)
             continue
 
@@ -124,12 +125,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="无标注真实图上的弱监督定位评测")
     ap.add_argument("--images", default="datasets/ccpd_raw", help="图片目录")
     ap.add_argument("--limit", type=int, default=60, help="取前 N 张（0=全部）")
-    ap.add_argument("--skip", type=int, default=0,
-                    help="跳过前 N 张（留出集验证：调参用前 60，验证用 --skip 60）")
-    ap.add_argument("--engine", default="deep", choices=["cv", "deep"],
-                    help="用哪个引擎；cv 快但合法率本身很低，建议 deep")
-    ap.add_argument("--override", default=None,
-                    help='JSON 覆盖 locate 参数，如 \'{"min_area_ratio": 0.0008}\'')
+    ap.add_argument(
+        "--skip",
+        type=int,
+        default=0,
+        help="跳过前 N 张（留出集验证：调参用前 60，验证用 --skip 60）",
+    )
+    ap.add_argument(
+        "--engine",
+        default="deep",
+        choices=["cv", "deep"],
+        help="用哪个引擎；cv 快但合法率本身很低，建议 deep",
+    )
+    ap.add_argument(
+        "--override", default=None, help="JSON 覆盖 locate 参数，如 '{\"min_area_ratio\": 0.0008}'"
+    )
     ap.add_argument("--json", metavar="PATH", help="结果写文件")
     args = ap.parse_args()
 

@@ -80,7 +80,7 @@ def patch_get_engine(monkeypatch: pytest.MonkeyPatch):
             def ensure_ready(self) -> None:
                 pass
 
-            def predict(self, image):  # noqa: ANN001
+            def predict(self, image):
                 self.calls += 1
                 texts = script.get(self.calls, [])
                 return [_result(t) for t in texts]
@@ -125,18 +125,18 @@ class TestEvaluateMetrics:
             files.append(p)
         return files
 
-    def test_counts_candidate_valid_and_overdetect(
-        self, tmp_path: Path, patch_get_engine
-    ):
+    def test_counts_candidate_valid_and_overdetect(self, tmp_path: Path, patch_get_engine):
         # 6 张图：3 张合法、1 张非法文本、1 张双结果(过检)、1 张空
-        patch_get_engine({
-            1: ["皖AM6160"],
-            2: ["皖A2L112"],
-            3: ["京A12345"],
-            4: ["ABCDEFG"],            # 不合语法 → 不算合法
-            5: ["皖A370J9", "皖B11111"],  # 两个结果 → 过检
-            6: [],
-        })
+        patch_get_engine(
+            {
+                1: ["皖AM6160"],
+                2: ["皖A2L112"],
+                3: ["京A12345"],
+                4: ["ABCDEFG"],  # 不合语法 → 不算合法
+                5: ["皖A370J9", "皖B11111"],  # 两个结果 → 过检
+                6: [],
+            }
+        )
         files = self._files(tmp_path, 6)
         rep = eval_weak.evaluate(files, LocateConfig(), "fake")
         assert rep["n_images"] == 6
@@ -159,7 +159,7 @@ class TestEvaluateMetrics:
             def ensure_ready(self) -> None:
                 pass
 
-            def predict(self, image):  # noqa: ANN002, ARG002
+            def predict(self, image):
                 raise RuntimeError("模型炸了")
 
         monkeypatch.setattr(engines_mod, "get_engine", lambda *a, **k: _Boom())
@@ -174,7 +174,7 @@ class TestEvaluateMetrics:
         good = tmp_path / "good.jpg"
         _make_image(good)
         bad = tmp_path / "bad.jpg"
-        bad.write_bytes(b"\xff\xd8broken")   # 伪 JPEG，解码失败
+        bad.write_bytes(b"\xff\xd8broken")  # 伪 JPEG，解码失败
         rep = eval_weak.evaluate([bad, good], LocateConfig(), "fake")
         assert rep["n_images"] == 1
         assert rep["valid_rate"] == 1.0
@@ -239,18 +239,24 @@ class TestMainOverride:
 
         calls: list[LocateConfig] = []
 
-        def fake_evaluate(files, cfg, engine):  # noqa: ARG001
+        def fake_evaluate(files, cfg, engine):
             calls.append(cfg)
             return {
-                "n_images": 1, "n_with_candidate": 1, "n_valid_text": 1,
-                "valid_rate": 0.5, "candidate_rate": 1.0,
-                "over_detect_rate": 0.0, "seconds": 0.1,
-                "ms_per_image": 100.0, "sample_texts": [],
+                "n_images": 1,
+                "n_with_candidate": 1,
+                "n_valid_text": 1,
+                "valid_rate": 0.5,
+                "candidate_rate": 1.0,
+                "over_detect_rate": 0.0,
+                "seconds": 0.1,
+                "ms_per_image": 100.0,
+                "sample_texts": [],
             }
 
         monkeypatch.setattr(eval_weak, "evaluate", fake_evaluate)
         monkeypatch.setattr(
-            sys, "argv",
+            sys,
+            "argv",
             ["eval_weak.py", "--images", str(images), *extra_args],
         )
         rc = eval_weak.main()
@@ -259,7 +265,9 @@ class TestMainOverride:
 
     def test_override_list_values_become_tuples(self, monkeypatch, capsys, tmp_path):
         rc, calls = self._run(
-            monkeypatch, capsys, tmp_path,
+            monkeypatch,
+            capsys,
+            tmp_path,
             ["--override", '{"morph_kernel_ratio": [0.006, 0.03]}'],
         )
         assert rc == 0
@@ -270,7 +278,9 @@ class TestMainOverride:
 
     def test_scalar_override_applied(self, monkeypatch, capsys, tmp_path):
         rc, calls = self._run(
-            monkeypatch, capsys, tmp_path,
+            monkeypatch,
+            capsys,
+            tmp_path,
             ["--override", '{"min_area_ratio": 0.0008}'],
         )
         assert rc == 0
@@ -286,7 +296,9 @@ class TestMainOverride:
     def test_json_output_written(self, monkeypatch, capsys, tmp_path):
         out = tmp_path / "rep.json"
         rc, _ = self._run(
-            monkeypatch, capsys, tmp_path,
+            monkeypatch,
+            capsys,
+            tmp_path,
             ["--json", str(out), "--override", '{"color_ratio": 0.35}'],
         )
         assert rc == 0

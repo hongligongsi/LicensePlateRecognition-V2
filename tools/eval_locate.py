@@ -39,8 +39,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from lpr.config import LocateConfig  # noqa: E402
-from lpr.engines.locate import locate_plates  # noqa: E402
+from lpr.config import LocateConfig
+from lpr.engines.locate import locate_plates
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -84,8 +84,7 @@ def load_dataset(root: Path, limit: int | None = None) -> list[Sample]:
     lab_dir = root / "labels" if (root / "labels").is_dir() else root
     samples: list[Sample] = []
 
-    files = sorted(p for p in img_dir.iterdir()
-                   if p.suffix.lower() in IMG_EXT)
+    files = sorted(p for p in img_dir.iterdir() if p.suffix.lower() in IMG_EXT)
     for p in files[:limit] if limit else files:
         # cv2.imread 不支持中文路径，用 fromfile 兜底
         data = np.fromfile(str(p), dtype=np.uint8)
@@ -194,9 +193,7 @@ class Report:
         ``-center_err`` 奖励定位更准。三者加权，避免优化出"召回了但框偏到离谱"的
         参数。注意网格搜索就靠这个值排序。
         """
-        return (0.50 * self.recall30
-                + 0.25 * self.recall50
-                + 0.25 * max(0.0, 1.0 - self.center_err))
+        return 0.50 * self.recall30 + 0.25 * self.recall50 + 0.25 * max(0.0, 1.0 - self.center_err)
 
 
 def evaluate(samples: list[Sample], cfg: LocateConfig, iou_thr: float = 0.5) -> Report:
@@ -219,8 +216,11 @@ def evaluate(samples: list[Sample], cfg: LocateConfig, iou_thr: float = 0.5) -> 
             cands, _ = locate_plates(s.image, cfg)
         except Exception:
             cands = []
-        pred = xywh_to_xyxy(np.asarray([c.bbox for c in cands], dtype=np.float32)) \
-            if cands else np.zeros((0, 4), np.float32)
+        pred = (
+            xywh_to_xyxy(np.asarray([c.bbox for c in cands], dtype=np.float32))
+            if cands
+            else np.zeros((0, 4), np.float32)
+        )
 
         used_images += 1
         n_gt += len(s.gt)
@@ -246,10 +246,12 @@ def evaluate(samples: list[Sample], cfg: LocateConfig, iou_thr: float = 0.5) -> 
             # 中心命中：任一预测框的中心落在某个真值框内
             pcx = (pred[:, 0] + pred[:, 2]) / 2
             pcy = (pred[:, 1] + pred[:, 3]) / 2
-            inside = ((pcx[:, None] >= s.gt[None, :, 0])
-                      & (pcx[:, None] <= s.gt[None, :, 2])
-                      & (pcy[:, None] >= s.gt[None, :, 1])
-                      & (pcy[:, None] <= s.gt[None, :, 3]))
+            inside = (
+                (pcx[:, None] >= s.gt[None, :, 0])
+                & (pcx[:, None] <= s.gt[None, :, 2])
+                & (pcy[:, None] >= s.gt[None, :, 1])
+                & (pcy[:, None] <= s.gt[None, :, 3])
+            )
             if bool(inside.any()):
                 center_hits += 1
 
@@ -325,8 +327,13 @@ GRID_QUICK = {
 
 GRID_FULL = {
     "min_area_ratio": (0.0005, 0.0008, 0.0015, 0.0022, 0.0035),
-    "morph_kernel_ratio": ((0.003, 0.010), (0.004, 0.015), (0.005, 0.021),
-                           (0.007, 0.028), (0.010, 0.038)),
+    "morph_kernel_ratio": (
+        (0.003, 0.010),
+        (0.004, 0.015),
+        (0.005, 0.021),
+        (0.007, 0.028),
+        (0.010, 0.038),
+    ),
     "open_kernel_ratio": (0.008, 0.014, 0.020, 0.028),
     "min_aspect": (1.8, 2.0, 2.2),
     "max_aspect": (4.5, 5.5, 6.5),
@@ -343,11 +350,13 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="把最优参数写入 config.tuned.json")
     ap.add_argument("--out", default="reports", help="报告输出目录（相对项目根）")
     ap.add_argument(
-        "--save-baseline", metavar="PATH",
+        "--save-baseline",
+        metavar="PATH",
         help="把本次基线指标存成回归基线文件（之后可用 --baseline 对照）",
     )
     ap.add_argument(
-        "--baseline", metavar="PATH",
+        "--baseline",
+        metavar="PATH",
         help=(
             "对照已存的基线指标：fitness 掉超过 --tolerance 就以非零码退出。"
             "注意必须在**同一个数据集**上跑才可比。CI 无法内嵌带标注数据集，"
@@ -355,7 +364,9 @@ def main() -> int:
         ),
     )
     ap.add_argument(
-        "--tolerance", type=float, default=0.01,
+        "--tolerance",
+        type=float,
+        default=0.01,
         help="允许的 fitness 跌幅（默认 0.01），超过即判为回归",
     )
     args = ap.parse_args()
@@ -373,8 +384,7 @@ def main() -> int:
         print("没有可用样本（检查 images/ 与 labels/ 结构）")
         return 1
     n_pos = sum(1 for s in samples if len(s.gt))
-    print(f"  {len(samples)} 张（其中 {n_pos} 张含真值框），"
-          f"示例尺寸 {samples[0].image.shape}")
+    print(f"  {len(samples)} 张（其中 {n_pos} 张含真值框），示例尺寸 {samples[0].image.shape}")
 
     base = LocateConfig()
     print("\n[基线] ", end="", flush=True)
@@ -390,7 +400,7 @@ def main() -> int:
         results = []
         t0 = time.time()
         for i, combo in enumerate(combos, 1):
-            ov = dict(zip(keys, combo))
+            ov = dict(zip(keys, combo, strict=False))
             try:
                 cfg = replace(base, **ov)
             except (ValueError, TypeError):
@@ -400,14 +410,17 @@ def main() -> int:
             if i % 10 == 0 or i == len(combos):
                 b = max(results, key=lambda r: r[0])
                 eta = (time.time() - t0) / i * (len(combos) - i)
-                print(f"  {i}/{len(combos)}  当前最优 fitness {b[0]:.4f}  剩 {eta:.0f}s",
-                      flush=True)
+                print(
+                    f"  {i}/{len(combos)}  当前最优 fitness {b[0]:.4f}  剩 {eta:.0f}s", flush=True
+                )
         if results:
             results.sort(key=lambda r: -r[0])
             best_fit, best_params, best_m = results[0]
             print(f"\n{'=' * 74}")
-            print(f"基线 fitness {baseline.fitness:.4f}  ->  最优 {best_fit:.4f}  "
-                  f"({best_fit - baseline.fitness:+.4f})")
+            print(
+                f"基线 fitness {baseline.fitness:.4f}  ->  最优 {best_fit:.4f}  "
+                f"({best_fit - baseline.fitness:+.4f})"
+            )
             print(f"基线 {baseline.as_dict()}")
             print(f"最优 {best_m.as_dict()}")
             print("\n最优参数:")
@@ -416,8 +429,10 @@ def main() -> int:
             print("\nTop 8:")
             for fit, p, m in results[:8]:
                 ps = " ".join(f"{k}={v}" for k, v in p.items())
-                print(f"  fit={fit:.4f} R@30={m.recall30:.3f} R@50={m.recall50:.3f} "
-                      f"ctr={m.center_hit:.3f} preds={m.n_pred} | {ps}")
+                print(
+                    f"  fit={fit:.4f} R@30={m.recall30:.3f} R@50={m.recall50:.3f} "
+                    f"ctr={m.center_hit:.3f} preds={m.n_pred} | {ps}"
+                )
 
     out_dir = ROOT / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -441,8 +456,7 @@ def main() -> int:
         cfg_path = apply_locate_params(best_params, ROOT)
         print(f"已写入调优配置: {cfg_path}")
         print(f"  （原文件已备份为 {cfg_path.name}.bak）")
-        print("  注意：config.json 的 engine.locate 会覆盖代码默认值，"
-              "下次运行即生效。")
+        print("  注意：config.json 的 engine.locate 会覆盖代码默认值，下次运行即生效。")
 
     if args.save_baseline:
         bp = Path(args.save_baseline)
@@ -461,13 +475,16 @@ def main() -> int:
                     "iou_threshold": args.iou,
                     "metrics": baseline.as_dict(),
                 },
-                ensure_ascii=False, indent=2,
+                ensure_ascii=False,
+                indent=2,
             ),
             encoding="utf-8",
         )
         print(f"回归基线已写入: {bp}")
-        print(f"  之后可用: python tools/eval_locate.py {args.dataset} "
-              f"--baseline {args.save_baseline}")
+        print(
+            f"  之后可用: python tools/eval_locate.py {args.dataset} "
+            f"--baseline {args.save_baseline}"
+        )
 
     if args.baseline:
         return _check_against_baseline(args, baseline, len(samples))
@@ -475,7 +492,7 @@ def main() -> int:
     return 0
 
 
-def _check_against_baseline(args, current: "Report", n_samples: int) -> int:
+def _check_against_baseline(args, current: Report, n_samples: int) -> int:
     """把当前指标与基线对照，跌幅超阈值则返回非零码（可用于 CI 卡口）。"""
     bp = Path(args.baseline)
     if not bp.is_absolute():

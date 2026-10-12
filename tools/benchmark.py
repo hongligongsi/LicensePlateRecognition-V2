@@ -27,23 +27,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import cv2  # noqa: E402
-import numpy as np  # noqa: E402
+import cv2
+import numpy as np
 
-from lpr.api import Recognizer  # noqa: E402
-from lpr.config import Config, LocateConfig  # noqa: E402
-from lpr.engines.locate import detect_color  # noqa: E402
-from lpr.plate_rules import FORMATS, is_valid  # noqa: E402
-from lpr.types import PlateColor  # noqa: E402
-from lpr.utils.image import imread  # noqa: E402
-from lpr.utils.security import (  # noqa: E402
+from lpr.api import Recognizer
+from lpr.config import Config, LocateConfig
+from lpr.engines.locate import detect_color
+from lpr.plate_rules import FORMATS, is_valid
+from lpr.types import PlateColor
+from lpr.utils.image import imread
+from lpr.utils.security import (
     Limits,
     PrivacyPolicy,
     RateLimiter,
+    SecurityError,
     check_image,
     mask_plate,
     scrub_value,
-    SecurityError,
 )
 
 
@@ -104,9 +104,7 @@ def _bench_engine(name: str, images: list[tuple[str, np.ndarray]], repeat: int) 
         "runs": len(all_latencies),
         "avg_ms": round(avg_lat, 2),
         "median_ms": round(med_lat, 2),
-        "p95_ms": round(
-            float(np.percentile(all_latencies, 95)) if all_latencies else 0.0, 2
-        ),
+        "p95_ms": round(float(np.percentile(all_latencies, 95)) if all_latencies else 0.0, 2),
         "qps": round(1000.0 / avg_lat, 2) if avg_lat else 0.0,
         "hit": hit,
         "hit_rate": round(hit / len(images), 4) if images else 0.0,
@@ -143,8 +141,9 @@ def _bench_security() -> dict:
 
     # 4) 畸形尺寸拦截
     try:
-        check_image(np.broadcast_to(np.uint8(0), (4, 50_000, 3)),
-                    Limits(max_side=1000, max_pixels=10**9))
+        check_image(
+            np.broadcast_to(np.uint8(0), (4, 50_000, 3)), Limits(max_side=1000, max_pixels=10**9)
+        )
         check("单边上限拦截", False, "未抛异常")
     except SecurityError as exc:
         check("单边上限拦截", True, str(exc)[:60])
@@ -283,7 +282,8 @@ def main() -> int:
     target = Path(args.images)
     if target.is_dir():
         paths = sorted(
-            p for p in target.iterdir()
+            p
+            for p in target.iterdir()
             if p.is_file() and p.suffix.lower() in Limits().allowed_extensions
         )
     else:
@@ -306,7 +306,9 @@ def main() -> int:
         for name in args.engine.split(",")
         if name.strip()
     ]
-    security = _bench_security() if not args.skip_security else {"checks": [], "passed": 0, "total": 0}
+    security = (
+        _bench_security() if not args.skip_security else {"checks": [], "passed": 0, "total": 0}
+    )
     coverage = _bench_coverage()
 
     _print_report(engine_reports, security, coverage)

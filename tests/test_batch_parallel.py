@@ -9,6 +9,7 @@
 * 单条失败被隔离成 warning，不拖垮整批
 * ``workers > 1`` 时 ROI 不回传（已文档化的取舍）
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -237,7 +238,7 @@ def test_recognize_outcome_from_dict_handles_empty():
 def _write_plate_like(path: Path, seed: int = 0) -> None:
     """写一张"看着像车牌"的合成图（蓝底白字块），便于 cv 引擎出候选。"""
     h, w = 60, 200
-    img = np.full((h, w, 3), (200, 120, 20), np.uint8)   # 蓝底
+    img = np.full((h, w, 3), (200, 120, 20), np.uint8)  # 蓝底
     band = img[8 : h - 8, 12 : w - 12]
     band[:] = (235, 235, 235)
     # 画几条竖条模拟字符
