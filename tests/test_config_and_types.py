@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from lpr.config import Config, LocateConfig
+from lpr.config import Config
 from lpr.types import PlateColor, PlateResult
 from lpr.utils.image import draw_result, ensure_odd, resize_max_side
 

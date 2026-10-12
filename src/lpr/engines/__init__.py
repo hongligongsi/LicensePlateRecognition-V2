@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from .base import BaseEngine, EngineUnavailable
 from .registry import (
+    INFERENCE_LOCK,
     available_engines,
+    clear_instances,
     create_engine,
     describe_engines,
     get_engine,
@@ -31,4 +33,6 @@ __all__ = [
     "register_engine",
     "available_engines",
     "describe_engines",
+    "clear_instances",
+    "INFERENCE_LOCK",
 ]

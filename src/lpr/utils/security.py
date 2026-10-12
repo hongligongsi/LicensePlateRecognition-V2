@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -305,28 +305,90 @@ def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
+class ModelStatus(str, Enum):
+    """模型完整性校验的三态结果。
+
+    之所以要和布尔值区分开：``skipped``（没配哈希白名单）**不等于** ``ok``。
+    之前二者都返回 ``True``，CLI 于是给"跳过校验"打出一个「✓」，
+    把"没检查"显示成了"检查通过"，是误导性的。
+    """
+
+    OK = "ok"            #: 已配置哈希且校验通过
+    SKIPPED = "skipped"  #: 未配置哈希白名单，未做校验
+    MISMATCH = "mismatch"  #: 已配置哈希但文件不匹配（疑似被篡改）
+    MISSING = "missing"  #: 文件不存在
+
+    @property
+    def ok(self) -> bool:
+        """是否"没有发现问题"（跳过校验也算没发现问题，但不是已验证）。"""
+        return self in (ModelStatus.OK, ModelStatus.SKIPPED)
+
+    @property
+    def verified(self) -> bool:
+        """是否真正完成了校验且通过。"""
+        return self is ModelStatus.OK
+
+    @property
+    def symbol(self) -> str:
+        return {
+            ModelStatus.OK: "✓",
+            ModelStatus.SKIPPED: "—",
+            ModelStatus.MISMATCH: "✗",
+            ModelStatus.MISSING: "✗",
+        }[self]
+
+
+@dataclass
+class ModelCheck:
+    """单个模型的校验结果。"""
+
+    name: str
+    status: ModelStatus
+    message: str
+
+    @property
+    def ok(self) -> bool:
+        return self.status.ok
+
+    def __bool__(self) -> bool:  # 便于 if check:
+        return self.ok
+
+
+def check_model(path: str | Path, expected_sha256: str | None) -> ModelCheck:
+    """校验模型文件，返回**三态**结果（区分"通过"与"跳过"）。"""
+    path = Path(path)
+    if not path.exists():
+        return ModelCheck(path.name, ModelStatus.MISSING, f"模型文件不存在: {path}")
+    if not expected_sha256:
+        return ModelCheck(
+            path.name,
+            ModelStatus.SKIPPED,
+            "未配置哈希白名单，跳过完整性校验"
+            "（可在 config.json 的 security.model_hashes 中配置）",
+        )
+
+    actual = sha256_file(path)
+    if actual.lower() != expected_sha256.lower():
+        return ModelCheck(
+            path.name,
+            ModelStatus.MISMATCH,
+            f"哈希不匹配！期望 {expected_sha256[:16]}…，实际 {actual[:16]}…。"
+            "文件可能已被篡改或替换。",
+        )
+    return ModelCheck(path.name, ModelStatus.OK, f"哈希校验通过 ({actual[:16]}…)")
+
+
 def verify_model(path: str | Path, expected_sha256: str | None) -> tuple[bool, str]:
-    """校验模型文件哈希。
+    """校验模型文件哈希，返回 ``(是否未被判定为篡改, 说明)``。
 
     ``cv2.ml.SVM_load`` 会解析文件内容，被篡改的模型可能引发解析层漏洞，
     也会静默改变识别行为。提供哈希白名单机制。
 
-    Returns:
-        ``(是否通过, 说明)``。未提供期望哈希时视为"跳过校验"（返回 True）。
+    注意本函数把"跳过校验"也视为通过（保持向后兼容）；需要区分
+    "通过 / 跳过 / 不匹配"三种状态时请用 :func:`check_model`。
     """
-    path = Path(path)
-    if not path.exists():
-        return False, f"模型文件不存在: {path}"
-    if not expected_sha256:
-        return True, "未配置哈希白名单，跳过完整性校验（建议在 config.json 中配置）"
-
-    actual = sha256_file(path)
-    if actual.lower() != expected_sha256.lower():
-        return False, (
-            f"模型 {path.name} 哈希不匹配！期望 {expected_sha256[:16]}…，实际 {actual[:16]}…。"
-            "文件可能已被篡改或替换。"
-        )
-    return True, f"哈希校验通过 ({actual[:16]}…)"
+    result = check_model(path, expected_sha256)
+    return result.ok, result.message
 
 
 def model_info(path: str | Path) -> dict:
@@ -373,15 +435,12 @@ class SecurityContext:
                 if not any(isinstance(f, MaskingFilter) for f in lg.filters):
                     lg.addFilter(MaskingFilter())
 
-    def verify_models(self, paths: Iterable[str | Path]) -> list[tuple[str, bool, str]]:
-        """批量校验模型文件。"""
-        out = []
-        for p in paths:
-            p = Path(p)
-            expected = self.model_hashes.get(p.name)
-            ok, msg = verify_model(p, expected)
-            out.append((p.name, ok, msg))
-        return out
+    def verify_models(self, paths: Iterable[str | Path]) -> list[ModelCheck]:
+        """批量校验模型文件，返回带三态状态的 :class:`ModelCheck` 列表。"""
+        return [
+            check_model(p, self.model_hashes.get(Path(p).name))
+            for p in (Path(x) for x in paths)
+        ]
 
 
 def safe_output_path(base: str | Path, filename: str) -> Path:
@@ -415,6 +474,9 @@ __all__ = [
     "anonymize_path",
     "sha256_file",
     "verify_model",
+    "check_model",
+    "ModelCheck",
+    "ModelStatus",
     "model_info",
     "safe_output_path",
 ]

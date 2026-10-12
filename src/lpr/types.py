@@ -211,6 +211,37 @@ class PlateResult:
             "meta": self.meta,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PlateResult":
+        """从 :meth:`to_dict` 的结果还原。
+
+        多进程批量识别要在父进程里重建结果对象，故需要这个反向入口。
+        ``roi`` 不在 :meth:`to_dict` 的字段里（跨进程传图像开销过大），
+        因此还原后 ``roi`` 恒为 ``None``。
+        """
+        color = PlateColor.UNKNOWN
+        try:
+            color = PlateColor(data.get("color") or "unknown")
+        except ValueError:
+            pass
+        layout = PlateLayout.UNKNOWN
+        try:
+            layout = PlateLayout(data.get("layout") or "unknown")
+        except ValueError:
+            pass
+        bbox = data.get("bbox")
+        return cls(
+            text=str(data.get("text") or ""),
+            color=color,
+            layout=layout,
+            bbox=tuple(int(v) for v in bbox) if bbox else None,
+            roi=None,
+            confidence=float(data.get("confidence") or 0.0),
+            engine=str(data.get("engine") or ""),
+            char_confidences=[float(c) for c in (data.get("char_confidences") or [])],
+            meta=dict(data.get("meta") or {}),
+        )
+
     def __str__(self) -> str:
         if not self.ok:
             return "<未识别到车牌>"

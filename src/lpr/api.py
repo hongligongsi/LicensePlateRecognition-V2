@@ -27,8 +27,9 @@ from typing import Iterable, Iterator
 
 import numpy as np
 
+from .batch import parallel_is_worthwhile, run_parallel
 from .config import Config
-from .engines import describe_engines, get_engine
+from .engines import INFERENCE_LOCK, describe_engines, get_engine
 from .engines.base import BaseEngine, EngineUnavailable
 from .plate_rules import describe as describe_plate
 from .plate_rules import plate_score
@@ -99,6 +100,20 @@ class RecognizeOutcome:
         }
         # 整棵树过一遍脱敏，确保 meta / variants / source 里的号码都被覆盖
         return scrub_value(payload, policy)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RecognizeOutcome":
+        """从 :meth:`to_dict` 的结果还原（多进程批量识别用）。
+
+        ``roi`` 不会被回传（跨进程传图像开销太大），还原后为 ``None``。
+        """
+        return cls(
+            source=str(data.get("source") or ""),
+            results=[PlateResult.from_dict(p) for p in (data.get("plates") or [])],
+            elapsed_ms=float(data.get("elapsed_ms") or 0.0),
+            engine=str(data.get("engine") or ""),
+            warnings=[str(w) for w in (data.get("warnings") or [])],
+        )
 
 
 @dataclass
@@ -221,22 +236,48 @@ class Recognizer:
                 * ``auto``：优先 deep，不可用则退回 cv
                 * ``cascade``：cv 定位筛候选 + deep 精确识别（最省时的组合）
             config: 全局配置。
-            limits: 安全限制。
-            privacy: 隐私策略。
+            limits: 安全限制；**不传则回落到 ``config.security``**（v2.3.1 修复）。
+            privacy: 隐私策略；**不传则回落到 ``config.security``**（v2.3.1 修复）。
+
+        .. note::
+           修复了一处静默失效应：此前 ``limits`` / ``privacy`` 默认取
+           ``Limits()`` / ``PrivacyPolicy()``，导致 ``config.json`` 里的
+           ``security`` 段（以及 ``LPR_MASK_OUTPUT`` 环境变量）**只在 CLI
+           路径生效，走 Python API 时被完全忽略**。现在两处都会正确回落。
         """
         self.config = config or Config.load()
-        self.limits = limits or Limits()
-        self.privacy = privacy or PrivacyPolicy()
+        # 关键：显式传参 > config.security > 库默认值
+        self.limits = limits if limits is not None else self.config.security.to_limits()
+        self.privacy = privacy if privacy is not None else self.config.security.to_privacy()
+        # 日志脱敏同样来自 config（幂等，重复安装无副作用）
+        if self.config.security.mask_logs:
+            self.config.security.to_context().setup()
         self.requested = engine
         self.engine_name = self._resolve_engine(engine)
         self._engine: BaseEngine | None = None
+        #: 跨引擎兜底（config.engine.mode == "cascade"），主引擎未命中时启用
+        self.fallback_name = self._resolve_fallback()
 
     # ------------------------------------------------------------------ 引擎解析
 
     @staticmethod
+    def _available_map() -> dict[str, dict]:
+        return {i["name"]: i for i in describe_engines()}
+
+    def _resolve_fallback(self) -> str | None:
+        """按 ``config.engine.mode`` 决定是否准备一个兜底引擎。"""
+        if self.config.engine.mode != "cascade":
+            return None
+        infos = self._available_map()
+        for name in CASCADE_ORDER:          # ("cv", "deep")
+            if name != self.engine_name and infos.get(name, {}).get("available"):
+                return name
+        return None
+
+    @staticmethod
     def _resolve_engine(requested: str) -> str:
         """把请求的引擎名解析成实际可用的引擎名。"""
-        infos = {i["name"]: i for i in describe_engines()}
+        infos = Recognizer._available_map()
         if requested == "auto":
             for name in ("deep", "cv"):
                 if infos.get(name, {}).get("available"):
@@ -258,9 +299,18 @@ class Recognizer:
             self._engine = get_engine(self.engine_name, self.config.engine)
         return self._engine
 
+    @property
+    def _fallback_engine(self) -> BaseEngine | None:
+        """惰性加载兜底引擎（仅 ``mode="cascade"`` 时有值）。"""
+        if not self.fallback_name:
+            return None
+        return get_engine(self.fallback_name, self.config.engine)
+
     def warmup(self) -> None:
         """预热：提前加载模型，把首次识别的耗时挪到启动阶段。"""
         _ = self.engine
+        if self._fallback_engine is not None:
+            logger.debug("兜底引擎 %s 已就绪（mode=cascade）", self.fallback_name)
 
     # ------------------------------------------------------------------ 单图
 
@@ -305,9 +355,27 @@ class Recognizer:
         return img
 
     def _predict(self, img: np.ndarray) -> list[PlateResult]:
-        """调用引擎识别，失败时给出可诊断的异常。"""
+        """调用引擎识别，失败时给出可诊断的异常。
+
+        推理串行化：引擎是跨线程共享的单例，批量识别与摄像头识别可能
+        来自不同线程，这里统一加锁，避免并发推理互相踩内存/抢 CPU。
+
+        ``config.engine.mode == "cascade"`` 时启用跨引擎兜底：主引擎一个
+        车牌都没给出，再用另一个可用引擎兜一次（这是 ``mode`` 的真实语义，
+        此前该字段只被校验、从未被读取）。
+        """
         try:
-            return self.engine.predict(img) or []
+            with INFERENCE_LOCK:
+                results = self.engine.predict(img) or []
+                if results or not self.fallback_name:
+                    return results
+                logger.info(
+                    "主引擎 %s 未命中，回退兜底引擎 %s", self.engine_name, self.fallback_name
+                )
+                fallback = self._fallback_engine
+                if fallback is None:
+                    return results
+                return fallback.predict(img) or []
         except EngineUnavailable:
             raise
         except Exception as exc:
@@ -317,40 +385,109 @@ class Recognizer:
     # ------------------------------------------------------------------ 批量
 
     def recognize_many(
-        self, sources: list[str | Path], annotate_dir: str | Path | None = None
+        self,
+        sources: list[str | Path],
+        annotate_dir: str | Path | None = None,
+        workers: int = 1,
     ) -> BatchOutcome:
         """批量识别图片列表。
 
         Args:
             sources: 图片路径列表。
             annotate_dir: 若提供，则把标注图保存到该目录（防路径穿越）。
+            workers: 并行进程数。``1``（默认）为串行；``>1`` 走多进程；
+                ``0`` 表示按可调度 CPU 数自动决定。多进程模式适合成百上千张
+                图片的场景。
+
+        .. note::
+           ``workers > 1`` 时结果中的 ``roi`` 恒为 ``None``：车牌 ROI 图像
+           跨进程传输的开销远大于收益。需要 ROI 请用 ``workers=1``。
+           结果顺序与传入顺序**一致**，与串行路径行为相同。
+
+           文件数不足以摊平子进程启动与模型加载的固定成本时
+           （见 :data:`lpr.batch.MIN_FILES_PER_WORKER`），即使指定了
+           ``workers > 1`` 也会自动退回串行，并记一条 info 日志 ——
+           并行在小批量上会更慢，不如不并行。
         """
         batch = BatchOutcome()
+        sources = list(sources)
         if len(sources) > self.limits.max_batch_files:
-            sources = list(sources)[: self.limits.max_batch_files]
+            sources = sources[: self.limits.max_batch_files]
             logger.warning("批量任务超过上限，已截断为 %d 个文件", self.limits.max_batch_files)
 
-        for src in sources:
-            outcome = self.recognize(src)
-            batch.outcomes.append(outcome)
+        want_parallel = workers > 1 or (workers == 0 and len(sources) > 1)
+        if want_parallel and not parallel_is_worthwhile(len(sources), workers):
+            logger.info(
+                "批量仅 %d 个文件，不足以摊平行进程固定成本，仍走串行", len(sources)
+            )
+            want_parallel = False
 
-            if annotate_dir and outcome.results:
-                try:
-                    img = imread(check_file(src, self.limits))
-                    annotated = draw_result(img, outcome.results)
-                    target = safe_output_path(annotate_dir, Path(str(src)).name)
-                    imwrite(target, annotated)
-                except Exception as exc:
-                    outcome.warnings.append(f"标注图保存失败: {exc}")
-                    logger.debug("标注图保存失败 %s: %s", src, exc)
+        if want_parallel:
+            batch.outcomes = self._recognize_parallel(sources, workers)
+        else:
+            for src in sources:
+                batch.outcomes.append(self.recognize(src))
 
+        if annotate_dir:
+            self._write_annotations(sources, batch, annotate_dir)
         return batch
+
+    def _recognize_parallel(self, sources: list[str | Path], workers: int) -> list[RecognizeOutcome]:
+        """多进程批量识别：把配置和文件分片丢给子进程，结果按原序拼回。"""
+        # 数组输入无法序列化给子进程（也没必要：它已经解码过了）
+        array_sources = [s for s in sources if isinstance(s, np.ndarray)]
+        if array_sources:
+            logger.warning(
+                "多进程模式不支持已解码的数组输入（%d 个），这些将走串行",
+                len(array_sources),
+            )
+
+        payloads = [s for s in sources if not isinstance(s, np.ndarray)]
+        dicts = (
+            run_parallel(payloads, self.engine_name, self.config.to_payload(), workers)
+            if payloads
+            else []
+        )
+        by_source = {d.get("source"): d for d in dicts}
+
+        out: list[RecognizeOutcome] = []
+        for src in sources:
+            if isinstance(src, np.ndarray):
+                out.append(self.recognize(src))
+                continue
+            data = by_source.get(str(src))
+            if data is None:
+                # 理论上不会发生；真发生了也不要静默丢结果
+                out.append(self.recognize(src))
+            else:
+                out.append(RecognizeOutcome.from_dict(data))
+        return out
+
+    def _write_annotations(
+        self,
+        sources: list[str | Path],
+        batch: BatchOutcome,
+        annotate_dir: str | Path,
+    ) -> None:
+        """把标注图写到目标目录（在父进程做，与是否多进程无关）。"""
+        for src, outcome in zip(sources, batch.outcomes):
+            if isinstance(src, np.ndarray) or not outcome.results:
+                continue
+            try:
+                img = imread(check_file(src, self.limits))
+                annotated = draw_result(img, outcome.results)
+                target = safe_output_path(annotate_dir, Path(str(src)).name)
+                imwrite(target, annotated)
+            except Exception as exc:
+                outcome.warnings.append(f"标注图保存失败: {exc}")
+                logger.debug("标注图保存失败 %s: %s", src, exc)
 
     def recognize_dir(
         self,
         directory: str | Path,
         recursive: bool = False,
         annotate_dir: str | Path | None = None,
+        workers: int = 1,
     ) -> BatchOutcome:
         """识别整个目录下的图片。"""
         root = Path(directory)
@@ -364,7 +501,7 @@ class Recognizer:
             if p.is_file() and p.suffix.lower() in self.limits.allowed_extensions
         )
         logger.info("目录 %s 下找到 %d 张图片", root, len(files))
-        return self.recognize_many(files, annotate_dir=annotate_dir)
+        return self.recognize_many(files, annotate_dir=annotate_dir, workers=workers)
 
     # ------------------------------------------------------------------ 视频
 
@@ -448,6 +585,8 @@ class Recognizer:
         return {
             "requested_engine": self.requested,
             "active_engine": self.engine_name,
+            "fallback_engine": self.fallback_name,
+            "mode": self.config.engine.mode,
             "limits": {
                 "max_file_mb": self.limits.max_file_bytes / 1048576,
                 "max_pixels": self.limits.max_pixels,

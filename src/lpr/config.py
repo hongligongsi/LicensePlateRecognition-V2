@@ -36,9 +36,16 @@ class LocateConfig:
     max_side: int = 1200
     #: 高斯模糊核（奇数，0 表示跳过）
     blur_kernel: int = 3
-    #: 开运算核大小，用于削弱非车牌纹理（相对图宽的万分比）
+    #: 开运算核大小，用于削弱非车牌纹理。
+    #:
+    #: 量纲是**相对图宽的比例**（``0.02`` = 图宽的 2%），不是千分比/万分比。
+    #: 实际计算见 ``locate.py``：``round(图像宽 * open_kernel_ratio)``。
     open_kernel_ratio: float = 0.02
-    #: 闭/开运算核（高, 宽），相对图高的千分比 / 图宽的千分比
+    #: 闭/开运算核 (高, 宽)。
+    #:
+    #: 量纲同样是**相对图高 / 图宽的比例**（``(0.005, 0.021)`` 表示
+    #: 核高 = 图高的 0.5%、核宽 = 图宽的 2.1%），不是千分比。
+    #: 实际计算见 ``locate.py``：``round(图高 * [0])`` × ``round(图宽 * [1])``。
     morph_kernel_ratio: tuple[float, float] = (0.005, 0.021)
     #: Canny 双阈值
     canny_low: int = 100
@@ -96,11 +103,23 @@ class LocateConfig:
 
 @dataclass
 class EngineConfig:
-    """引擎选择与运行方式。"""
+    """引擎选择与运行方式。
 
-    #: 默认引擎："cv"（传统，快但精度有限）| "deep"（深度学习，推荐）| "cascade"（级联）
+    ``default`` 与 ``mode`` 是两个**正交**的维度，不要混淆：
+
+    * ``default``：用哪个引擎*对象*。``"cascade"`` 会解析成 ``deep``
+      （deep 引擎内部本就"CV 定位 → 纯识别网络"，这就是级联的含义）。
+    * ``mode``：**跨引擎兜底**。``"cascade"`` 时，主引擎返回空结果会自动再
+      尝试另一个可用引擎（例如 deep 完全没命中时让 cv 兜一次），
+      ``"single"`` 则只跑主引擎。
+
+    因此 ``default="cascade"`` + ``mode="single"`` 并不矛盾：前者选引擎对象，
+    后者决定要不要跨引擎兜底。
+    """
+
+    #: 默认引擎："cv"（传统，快但精度有限）| "deep"（深度学习，推荐）| "cascade"（= deep，含 CV 定位引导）
     default: str = "cascade"
-    #: 引擎组合模式："single"（只用 default）| "cascade"（先传统，失败再深度）
+    #: 跨引擎兜底策略："single"（只跑主引擎）| "cascade"（主引擎未命中时再试另一个可用引擎）
     mode: str = "single"
     #: 传统 CV 引擎参数
     locate: LocateConfig = field(default_factory=LocateConfig)
@@ -119,7 +138,7 @@ class EngineConfig:
 class UIConfig:
     """界面相关。"""
 
-    window_title: str = "车牌识别系统 v2.3"
+    window_title: str = "车牌识别系统 v2.3.1"
     window_size: tuple[int, int] = (1280, 800)
     #: 摄像头识别间隔（秒），原版固定 2 秒，这里可调
     camera_interval: float = 0.35
@@ -155,6 +174,21 @@ class SecurityConfig:
     #: 每秒最多识别多少次（限流，防止并发打满 CPU）
     max_qps: float = 20.0
 
+    # ---- 模型完整性
+    #: 模型哈希白名单 ``{文件名: sha256}``。
+    #:
+    #: 默认内置随仓库分发的两个 SVM 模型的哈希，因此 ``lpr models --verify``
+    #: 开箱即可真正做完整性校验（此前该白名单无处配置，校验恒为"跳过"）。
+    #: 换成自训练模型后需同步更新这里，否则会被判为不匹配。
+    model_hashes: dict[str, str] = field(
+        default_factory=lambda: {
+            "svm.dat": "ce3fdffb3e9529fceaacdd3aeb091ce23161f24510c4cc32ffa47708dcda47c5",
+            "svmchinese.dat": (
+                "dd3982d022008bf163dc0b02719a4a4b454a5fb8093653c13fc3d28fc67f41d8"
+            ),
+        }
+    )
+
     def to_limits(self):
         """转成 ``utils.security.Limits``。"""
         from .utils.security import Limits
@@ -176,6 +210,17 @@ class SecurityConfig:
             mask_keep_tail=self.mask_keep_tail,
             mask_logs=self.mask_logs,
             keep_roi=self.keep_roi,
+        )
+
+    def to_context(self):
+        """一次性转成 ``utils.security.SecurityContext``（含模型哈希白名单）。"""
+        from .utils.security import SecurityContext
+
+        return SecurityContext(
+            limits=self.to_limits(),
+            privacy=self.to_privacy(),
+            model_hashes=dict(self.model_hashes),
+            install_log_masking=self.mask_logs,
         )
 
 
@@ -222,16 +267,38 @@ class Config:
     def save(self, path: str | Path | None = None) -> Path:
         """把当前配置写回 JSON 文件。"""
         path = Path(path) if path else DEFAULT_CONFIG_PATH
-        payload = {
+        payload = self.to_payload()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+        return path
+
+    def to_payload(self) -> dict:
+        """转成可 JSON / pickle 传递的纯字典。
+
+        多进程批量识别要把配置送进子进程，这里避免直接把 dataclass 传过去
+        （子进程里 dataclass 的构造参数可能与父进程不一致）。
+        """
+        return {
             "engine": _to_plain(self.engine),
             "ui": _to_plain(self.ui),
             "security": _to_plain(self.security),
             "log_level": self.log_level,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as fp:
-            json.dump(payload, fp, ensure_ascii=False, indent=2)
-        return path
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "Config":
+        """从 :meth:`to_payload` 的结果还原配置。"""
+        cfg = cls()
+        if payload:
+            _apply_overrides(cfg.engine, payload.get("engine", {}))
+            _apply_overrides(cfg.ui, payload.get("ui", {}))
+            _apply_overrides(cfg.security, payload.get("security", {}))
+            if "log_level" in payload:
+                cfg.log_level = str(payload["log_level"])
+        cfg.engine.validate()
+        cfg.security.to_limits().validate()
+        return cfg
 
 
 def _to_plain(obj: Any) -> Any:

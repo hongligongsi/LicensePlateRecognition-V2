@@ -54,13 +54,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
-import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from lpr.config import EngineConfig, LocateConfig  # noqa: E402
 from lpr.engines.deep_engine import measure_layout  # noqa: E402
 from lpr.engines.locate import detect_color, locate_plates  # noqa: E402
-from lpr.types import PlateColor, PlateLayout  # noqa: E402
+from lpr.types import PlateColor  # noqa: E402
 from lpr.utils.image import imread  # noqa: E402
 
 

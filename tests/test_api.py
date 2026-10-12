@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from lpr.api import BatchOutcome, RecognizeOutcome
 from lpr.types import PlateColor, PlateResult

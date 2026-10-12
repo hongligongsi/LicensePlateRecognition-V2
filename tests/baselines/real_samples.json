@@ -1,0 +1,182 @@
+{
+  "_note": "真实样张行为快照，用于 CI 回归拦截；不是准确率指标。确认行为变化属预期后，用 tools/make_regression_baseline.py --write 更新。",
+  "_engine": "cv (deterministic)",
+  "records": [
+    {
+      "path": "img/double_lv.png",
+      "readable": true,
+      "size": [
+        1023,
+        636
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        102,
+        395,
+        213,
+        98
+      ],
+      "top_color": "white"
+    },
+    {
+      "path": "img/double_yellow.jpg",
+      "readable": true,
+      "size": [
+        500,
+        372
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        372,
+        123,
+        128,
+        60
+      ],
+      "top_color": "black"
+    },
+    {
+      "path": "img/e22e3d419cc627b985049e2cb26c079.jpg",
+      "readable": true,
+      "size": [
+        1276,
+        1702
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        331,
+        233,
+        595,
+        230
+      ],
+      "top_color": "white"
+    },
+    {
+      "path": "img/hongkang1.jpg",
+      "readable": true,
+      "size": [
+        608,
+        803
+      ],
+      "n_candidates": 4,
+      "top_bbox": [
+        379,
+        55,
+        194,
+        181
+      ],
+      "top_color": "yellow"
+    },
+    {
+      "path": "img/police.jpg",
+      "readable": true,
+      "size": [
+        625,
+        485
+      ],
+      "n_candidates": 3,
+      "top_bbox": [
+        402,
+        100,
+        223,
+        68
+      ],
+      "top_color": "black"
+    },
+    {
+      "path": "img/shi_lin_guan.jpg",
+      "readable": true,
+      "size": [
+        527,
+        552
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        137,
+        323,
+        311,
+        85
+      ],
+      "top_color": "black"
+    },
+    {
+      "path": "img/single_blue.jpg",
+      "readable": true,
+      "size": [
+        1106,
+        826
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        0,
+        80,
+        743,
+        463
+      ],
+      "top_color": "black"
+    },
+    {
+      "path": "img/single_yellow.jpg",
+      "readable": true,
+      "size": [
+        640,
+        474
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        270,
+        208,
+        317,
+        91
+      ],
+      "top_color": "hazmat"
+    },
+    {
+      "path": "img/xue.jpg",
+      "readable": true,
+      "size": [
+        1099,
+        616
+      ],
+      "n_candidates": 4,
+      "top_bbox": [
+        279,
+        462,
+        258,
+        114
+      ],
+      "top_color": "yellow"
+    },
+    {
+      "path": "samples/1.jpg",
+      "readable": true,
+      "size": [
+        2304,
+        4096
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        1179,
+        0,
+        748,
+        309
+      ],
+      "top_color": "white"
+    },
+    {
+      "path": "samples/2.jpg",
+      "readable": true,
+      "size": [
+        2304,
+        2880
+      ],
+      "n_candidates": 5,
+      "top_bbox": [
+        0,
+        350,
+        688,
+        414
+      ],
+      "top_color": "blue"
+    }
+  ]
+}

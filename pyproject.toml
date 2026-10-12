@@ -4,13 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lpr-v2"
-version = "2.3.0"
+version = "2.3.1"
 description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "License-Plate-Recognition contributors" }]
 keywords = ["license-plate", "ocr", "opencv", "车牌识别", "lpr"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "numpy>=1.24",
@@ -24,15 +33,94 @@ deep = ["rapidocr-onnxruntime>=1.2"]
 deep-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.5"]
 # 图形界面
 gui = ["PySide6>=6.5"]
-# 开发
-dev = ["pytest>=7.0"]
+# 开发（含静态检查）
+dev = [
+    "pytest>=7.0",
+    "pytest-timeout>=2.2",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
 
 [project.scripts]
 lpr = "lpr.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/hongligongsi/LicensePlateRecognition-V2"
+Source = "https://github.com/hongligongsi/LicensePlateRecognition-V2"
+Issues = "https://github.com/hongligongsi/LicensePlateRecognition-V2/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
+#: 声明为 typed 包（配合 src/lpr/py.typed），下游才敢依赖我们的类型标注
+[tool.setuptools.package-data]
+lpr = ["py.typed"]
+
+# ────────────────────────────────────────────────────────────────
+# 测试
+# ────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --strict-markers"
+markers = [
+    "slow: 会真正启动多进程/加载模型的较重测试（可用 -m 'not slow' 跳过）",
+]
+#: 说明：不在此处写 ``timeout=``，因为 pytest-timeout 属于可选依赖，
+#: 未安装时该键会产生 "Unknown config option" 警告。CI 与本地想启用超时请用
+#: ``pytest --timeout=300``（详见 .github/workflows/ci.yml）。
+
+# ────────────────────────────────────────────────────────────────
+# 静态检查（ruff = lint + format，mypy = 类型）
+# ────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # ruff 专有规则
+]
+ignore = [
+    "E501",    # 行长由 formatter 负责，docstring/中文注释常超 100
+    "RUF001",  # 中文注释里的全角标点不算"歧义字符"
+    "RUF002",
+    "RUF003",
+    "B008",    # 允许在默认参数里调用工厂函数
+    "SIM108",  # 三元表达式不总是更清晰
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM117"]
+"tools/*" = ["E402"]  # 工具脚本需要先 sys.path 再 import
+
+[tool.ruff.lint.isort]
+known-first-party = ["lpr"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/lpr"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+#: 逐步收紧：先保证核心契约与数据结构是干净的
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["lpr.ui.*"]
+#: Qt 的信号/槽装饰器在类型层面噪声很大，单独放宽
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["cv2", "rapidocr_onnxruntime", "paddleocr", "PySide6.*"]
+ignore_missing_imports = true

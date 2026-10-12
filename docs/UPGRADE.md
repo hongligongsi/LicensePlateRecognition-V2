@@ -616,3 +616,210 @@ float32/float64、含 NaN 数组直接抛 OpenCV 异常。新增
 * 新增 `tests/test_v2_3_quality.py` **49 项**：四级抽取、形近字召回、三→E、
   军牌收窄、垂直合并几何、`ensure_bgr` 病态输入、管线异常防护
 * 测试总数 293 → **334**，全部通过
+
+---
+
+# v2.3.1 —— 修掉 4 个真 Bug + 补上工程化配套
+
+这一版没有新功能，做的是**代码体检后兑现的修复**。起因是一次逐文件核查：
+文档里承诺的能力，有几处在实现上并不成立。
+
+## 一、Recognizer 静默忽略 config.security
+
+`api.py` 里原本是：
+
+```python
+self.limits  = limits  or Limits()          # ← 库默认值
+self.privacy = privacy or PrivacyPolicy()   # ← 库默认值
+```
+
+从不回落到 `config.security`。后果是 **`config.json` 的 `security` 段、
+以及 `LPR_MASK_OUTPUT` 环境变量，只对 CLI 生效，走 Python API 时被完全忽略**。
+实测（修复前）：
+
+```
+config 要求打码: True        → Recognizer 实际: False   ← 被忽略
+config 要求上限 1MB          → Recognizer 实际: 32MB    ← 被忽略
+```
+
+修复后优先级为「显式传参 > `config.security` > 库默认值」，且 `mask_logs`
+会在构造时幂等地装上日志脱敏过滤器。
+
+## 二、GUI 完全没有接入安全层
+
+`ui/window.py` / `ui/worker.py` 里**零** security 引用：
+
+* `imread(path)` 裸调 —— 没有 `check_file`（不校验大小/像素/扩展名）
+* CSV 导出是裸 `open(path, "w")`，直接写明文车牌号
+* `SecurityContext.setup()` 从未调用 → 日志脱敏过滤器在 GUI 下没装
+* 摄像头路径 `engine.predict(frame)` 也没有 `check_image`
+
+也就是说 README 的「更安全：完整的输入防护与隐私脱敏」**在 GUI 路径上不成立**。
+现在三条入口（CLI / Python API / GUI）共用同一份 `config.security`。
+
+## 三、摄像头"采集与识别解耦"是假的
+
+`CameraWorker.run()` 里：
+
+```python
+if now - last_predict >= self.interval and not self._recognizing:
+    results = engine.predict(frame)   # ← 同步阻塞采集循环
+```
+
+`_recognizing` 只在 `__init__` 赋值过一次、**从此再没被读取过**（死逻辑）。
+识别就在采集循环里同步跑，deep 引擎约 200ms/张 → 采集帧率从 ~30fps 掉到 ~5fps，
+与 docstring 写的「采集循环里绝不进行识别」和 README 的「画面流畅不掉帧」都不符。
+
+现在拆成两个线程：`CameraWorker` 只采集（循环里没有任何推理），
+`_RecognizeThread` 只识别，且用「序号 + 最新帧引用」保证永远在**最新画面**上推理，
+识别慢于采集时不积压帧。另外补了 `INFERENCE_LOCK` 把推理串行化 ——
+引擎是跨线程共享的单例，批量识别与摄像头识别并发跑同一份模型并不安全。
+
+## 四、模型哈希白名单形同虚设
+
+`lpr models --verify` 原本输出：
+
+```
+✓ 未配置哈希白名单，跳过完整性校验
+```
+
+* `SecurityConfig` 里**根本没有 `model_hashes` 字段** —— 照它自己的建议也配不了
+* `verify_model` 对未校验项返回 `True`，CLI 于是打出一个「✓」：
+  **"没检查"显示成了"检查通过"**
+
+现在：新增 `ModelStatus` 三态（`ok` / `skipped` / `mismatch` / `missing`）与
+`ModelCheck`，跳过校验显示为「—」并明确说明；`SecurityConfig.model_hashes`
+开箱内置随仓库分发的两个 SVM 模型哈希，`lpr models --verify` 立刻能真做校验。
+
+## 五、顺带修掉的一致性 / 真错问题
+
+| 问题 | 位置 | 说明 |
+|---|---|---|
+| `mode` 是死配置 | `config.py` | 只在 `validate` 里出现，从未被读取。现在赋予真实语义：`mode="cascade"` 时主引擎未命中会跨引擎兜底，并把 `default` 与 `mode` 的正交关系写清楚 |
+| 引擎单例忽略新配置 | `registry.py` | 原本只按 name 缓存，第二次传入的新配置被静默忽略（必须手动 `clear_instances()`）。现在按 `(name, 配置指纹)` 缓存，配置变化自动重建并先 `close()` 旧实例 |
+| **搜索网格量纲错了** | `eval_locate.py` | `morph_kernel_ratio` 是"相对图宽的比例"，网格却给到 `(0.025, 0.60)` —— 0.60 = 图宽 60% 的形态学核，会把整幅图糊成一团；且网格整体偏大、**没包住默认值** `(0.005, 0.021)`，选出来的"最优"是网格边缘的退化解。已修正范围并加 `TestSearchGridSanity` 守住 |
+| 参数量纲注释写错 | `config.py` | `open_kernel_ratio` / `morph_kernel_ratio` 注释写"万分比/千分比"，实际就是比例（`0.02` = 图宽 2%） |
+| 未使用导入 | 多处 | `cli.py`、`window.py`、`security.py`、`cv_engine.py` 等 13 处；因为这次要给 CI 开 ruff，必须清掉 |
+| `Track.to_result()` 伪造逐字符置信度 | `tracker.py` | 用 `[best_conf] * len(text)` 填 `char_confidences`，与 deep 引擎真实 per-char 概率语义冲突。**本次未改动**（会牵动跨帧投票的加权），列为待办 |
+
+## 六、批量识别多进程（`--workers`）
+
+新增 `lpr/batch.py` + `Recognizer.recognize_many(workers=N)` + CLI `--workers`：
+
+* 分片数 = `workers * 4`（多于进程数，便于负载均衡）
+* 每个子进程在 `initializer` 里只建一次识别器（模型冷启动是固定成本）
+* 结果**按原始顺序**拼回，与串行路径一致
+* 单文件异常被隔离成一条 warning，不拖垮整批
+* `workers > 1` 时 `roi` 恒为 `None`（跨进程传图像的开销远大于收益），已写进 docstring
+* 文件数不足以摊平固定成本时**自动退回串行**（`MIN_FILES_PER_WORKER`），
+  避免"开了并行反而更慢"
+* `spawn` 而非 `fork`：避免 Linux 上 fork 出持有 `INFERENCE_LOCK` 的副本导致死锁
+
+### 如实说明：收益没有被验证
+
+在开发/CI 环境实测**没有加速**：
+
+| 场景 | 串行 | 4 进程 | 加速比 |
+|---|---|---|---|
+| cv 引擎 120 张 | 2.83s | 2.34s | 1.21x |
+| deep 引擎 40 张 | 29.87s | 43.58s | **0.69x** |
+| deep 引擎 160 张 | 172.68s | 196.29s | **0.88x** |
+
+为排除"是实现的锅"，做了一组**纯 CPU 计算对照**：
+
+```
+cpu_count=20   4x 工作量：串行 0.50s / 4 进程 1.02s → 0.49x
+```
+
+环境报 20 核，但纯 CPU 计算用 4 进程也只有 0.49x —— **是 CPU 配额受限，
+不是并行实现有问题**。这个结论写进了 README 的「已知限制」，并提供了
+`tools/bench_workers.py --cpu-control` 让使用者在自己的机器上量。
+
+之所以把这套代码留下来：功能本身完整、有测试（顺序 / 隔离 / ROI 取舍 /
+小批量退回串行都有断言），在真实多核机器上应当有收益；但**我们没有证到**，
+所以不写"提速 N 倍"这种话。
+
+## 七、工程化配套
+
+* **CI**（`.github/workflows/ci.yml`）：ruff + mypy；Ubuntu 上 Python 3.10~3.13、
+  Windows 3.12（中文路径逻辑强相关）；Qt 用例走 `QT_QPA_PLATFORM=offscreen`
+* **pyproject**：ruff（E/W/F/I/B/UP/C4/SIM/RUF）、mypy、`py.typed`、`Typing :: Typed`
+  classifier、`deep-paddle` / `gui` / `dev` extras 整理
+* **回归基线**（`tests/test_regression_baseline.py` + `tests/baselines/real_samples.json`）：
+  用确定性 `cv` 引擎跑仓库自带 11 张真实样张，对照候选数 / top 候选框（IoU ≥ 0.85）/
+  top 底色，任一漂移即失败
+* `tools/eval_locate.py` 新增 `--save-baseline` / `--baseline` / `--tolerance`，
+  可把定位指标做成卡口（fitness 跌幅超阈值即非零退出；样本数不一致会明确拒绝比较）
+* `tools/make_regression_baseline.py`：生成/更新行为快照
+
+### 关于"合成图当准确率基线"——试过，放弃了
+
+为了在 CI 里有准确率门槛，写过一版程序化生成的合成样张（精确真值、可复现、
+不依赖下载）。实测不可行：
+
+```
+ratio=0.10  真值=[214,195,314,226]  候选=0
+ratio=0.20  真值=[558, 11,758, 74]  候选=0
+ratio=0.35  真值=[549,336,899,447]  候选=0
+ratio=0.50  真值=[179,446,679,605]  候选=2  ← 找到的是字符子区域，不是车牌
+```
+
+合成牌只有放大到占画面一半宽才勉强被定位到，且找到的是字符区而非车牌区。
+拿它算准确率是自欺欺人，所以那套生成器**已删除**，改为"行为快照"基线，
+并在文件里明确写出它**不能**回答"准确率是多少"。
+
+## 八、测试
+
+* 新增 `tests/test_v2_3_1_fixes.py`（37 项）、`tests/test_batch_parallel.py`（30 项）、
+  `tests/test_regression_baseline.py`（22 项）、`TestSearchGridSanity`（5 项）
+* 测试总数 366 → **472**，全部通过
+* 关键回归断言举例：`Recognizer` 必须回落 `config.security`、
+  `CameraWorker` 源码里不得出现 `predict(`、`check_model` 的"跳过"不得显示成 ✓、
+  多进程结果顺序与串行一致、网格必须包住默认值
+
+## 九、阈值调参复核：结论是"不落库"
+
+上一版留下的待办"把调参结果 apply 到 `config.json`"，复核结论是
+**维持默认参数不改** —— 因为上轮那份"最优值"本身就是网格量纲错误产出的
+退化解（见第五节），而重新评测没有找到任何站得住的改进。
+
+### 依据：弱监督评测（`tools/eval_weak.py`）
+
+手上大量真实 CCPD 图没有真值框（标注在重命名时被抹掉），带标注集又下载
+不全，于是用弱监督信号：真实车牌号码必须满足国标语法，所以
+"**能否产出语法合法的号码**"是不需要人工标注的有效指标。基线（deep 引擎，
+60 张真实样张）：
+
+```
+合法率 0.5167   候选率 0.5667   过检率 0.0000
+```
+
+命中的候选里 31/34 语法合法（质量很高），瓶颈是**召回**（四成图两条
+定位/兜底路径都颗粒无收）。
+
+### 三组候选参数 × 留出集验证
+
+| 候选 | 调参段（前 60 张） | 留出集（第 61~160 张，100 张） | 结论 |
+|---|---|---|---|
+| A `min_area_ratio 0.0008` + `color_ratio 0.35` | 完全持平 | —（未进入验证） | 淘汰 |
+| B `min_aspect 1.6` + `max_aspect 7.0` | 合法率 +1.7pp | **完全持平**（0.4900 → 0.4900） | 淘汰 |
+| C `max_candidates 8` + `min_chars 5` | 完全持平 | —（未进入验证） | 淘汰 |
+
+候选 B 在调参段看着有 +2 张的改善，**在留出集上没有复现** —— 是切片噪声。
+上一轮 `morph_kernel_ratio=(0.025, 0.60)` 的教训就是"没有验证集的调参
+不可信"，这次同样的问题在 60 张图的小样本上差点重演，被留出集拦下了。
+
+### 顺带修掉的工具 bug
+
+`eval_weak.py` 的 `--skip/--limit` 组合原本是"先取前 limit 张、再跳过
+skip"，`--skip 60 --limit 100` 实际只评 40 张且与调参段重叠。已把切片
+抽成 `select()` 并钉死回归测试（第 61~160 张必须恰好 100 张）。
+
+### 留下的资产
+
+* `tools/eval_weak.py`：无标注真实图的弱监督评测，`--override` 一行 JSON
+  即可做参数对照，`--skip/--limit` 支持调参段 / 验证段分离
+* `tests/test_eval_weak.py`（18 项）：指标口径 / 异常隔离 / 覆盖参数 /
+  切片口径全部有测试
+* 以后真要调参：先在调参段看到明确改善，再过留出集，最后过
+  `tests/test_regression_baseline.py` 的行为快照 —— 三关都过才动 `config.json`

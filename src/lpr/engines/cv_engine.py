@@ -28,7 +28,7 @@ from ..types import PlateColor, PlateResult
 from ..utils.image import imread
 from ..utils.logging_setup import get_logger
 from .base import BaseEngine, EngineUnavailable
-from .locate import detect_color, locate_plates, refine_by_color
+from .locate import locate_plates, refine_by_color
 from .segment import separate_characters
 from .svm_classifier import (
     PROVINCES,

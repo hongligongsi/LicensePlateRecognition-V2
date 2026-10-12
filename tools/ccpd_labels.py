@@ -133,8 +133,6 @@ def crop_by_detection(img, ann_or_none=None, pad: float = 0.0):
 
     ``pad`` 为相对外扩比例，正数向外留白、负数向内收缩。
     """
-    import cv2
-    import numpy as np
 
     if ann_or_none is None:
         return img

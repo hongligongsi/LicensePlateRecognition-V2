@@ -103,8 +103,6 @@ _BAND_HEIGHT_SIMILARITY = 0.55
 def _extract_plate(cleaned: str) -> str | None:
     """从清洗后的 OCR 文本里抽出一段车牌号。
 
-    三级策略（借鉴参考实现 YOLO26-plate 的"宽松召回 / 严格校验"分层）：
-
     四级策略（借鉴参考实现 YOLO26-plate 的"宽松召回 / 严格校验"分层）：
 
     1. **严格召回**：用 :data:`_PLATE_TEXT` 找结构合法的片段（首选）。

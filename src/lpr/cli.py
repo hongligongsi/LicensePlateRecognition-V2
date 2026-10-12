@@ -35,18 +35,11 @@ from .config import Config
 from .engines import describe_engines
 from .plate_rules import correct, describe as describe_plate, is_valid
 from .types import parse_color
-from .utils.image import draw_result, imread, imwrite
 from .utils.logging_setup import setup_logging
-from .utils.security import (
-    SecurityContext,
-    SecurityError,
-    mask_plate,
-    model_info,
-    safe_output_path,
-)
+from .utils.security import SecurityError, mask_plate, model_info
 
 PROG = "lpr"
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -73,6 +66,13 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", metavar="DIR", help="输出 JSON + CSV 报告到指定目录")
     p.add_argument("--json", action="store_true", help="在终端以 JSON 输出")
     p.add_argument("--mask", action="store_true", help="对输出中的车牌号打码（隐私保护）")
+    p.add_argument(
+        "--workers", type=int, default=1, metavar="N",
+        help=(
+            "并行识别进程数（默认 1=串行）。>1 走多进程加速，适合成百上千张；"
+            "0 表示按 CPU 核数自动决定。注意：多进程模式下结果不含 ROI 图像"
+        ),
+    )
     p.add_argument(
         "--color",
         default=None,
@@ -124,11 +124,7 @@ def _build_recognizer(args, cfg: Config) -> Recognizer:
     if getattr(args, "mask", False):
         cfg.security.mask_output = True
 
-    sec = SecurityContext(
-        limits=cfg.security.to_limits(),
-        privacy=cfg.security.to_privacy(),
-        install_log_masking=cfg.security.mask_logs,
-    )
+    sec = cfg.security.to_context()
     sec.setup()
 
     return Recognizer(
@@ -160,7 +156,15 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
         print("未找到可处理的图片", file=sys.stderr)
         return 1
 
-    batch = rec.recognize_many(sorted(targets), annotate_dir=args.save_annotated)
+    targets = sorted(targets)
+    workers = int(getattr(args, "workers", 1) or 0)
+    if workers != 1 and len(targets) > 1:
+        from .batch import resolve_workers
+
+        print(f"并行识别：{len(targets)} 张图 / {resolve_workers(workers, len(targets))} 进程")
+    batch = rec.recognize_many(
+        targets, annotate_dir=args.save_annotated, workers=workers
+    )
 
     # 按底色过滤（可多选，如 --color 黄色,危险品）
     wanted: set | None = None
@@ -302,7 +306,7 @@ def cmd_check(args: argparse.Namespace, cfg: Config) -> int:
 def cmd_models(args: argparse.Namespace, cfg: Config) -> int:
     from .config import MODELS_DIR
 
-    sec = SecurityContext(limits=cfg.security.to_limits())
+    sec = cfg.security.to_context()
     files = sorted(MODELS_DIR.glob("*")) if MODELS_DIR.exists() else []
 
     if not files:
@@ -310,6 +314,7 @@ def cmd_models(args: argparse.Namespace, cfg: Config) -> int:
         return 1
 
     print(f"模型目录: {MODELS_DIR}\n")
+    failed = 0
     for path in files:
         if path.is_dir():
             continue
@@ -317,9 +322,17 @@ def cmd_models(args: argparse.Namespace, cfg: Config) -> int:
         print(f"  {info['path']:<22} {info['size_bytes'] / 1048576:>8.2f} MB  "
               f"{info['mtime']}")
         if args.verify:
-            ok, msg = sec.verify_models([path])[0][1:]
-            mark = "✓" if ok else "✗"
-            print(f"    {mark} {msg}")
+            check = sec.verify_models([path])[0]
+            # 「跳过校验」用 —，不要显示成 ✓：没检查 ≠ 检查通过
+            print(f"    {check.status.symbol} {check.message}")
+            if not check.ok:
+                failed += 1
+    if args.verify:
+        print()
+        if failed:
+            print(f"✗ {failed} 个模型未通过完整性校验", file=sys.stderr)
+            return 1
+        print("（✓=已校验通过，—=未配置哈希白名单故未校验）")
     return 0
 
 

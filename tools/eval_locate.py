@@ -310,19 +310,27 @@ def _greedy_match(m: np.ndarray, thr: float) -> list[tuple[int, int]]:
 # --------------------------------------------------------------------------- #
 # 网格
 # --------------------------------------------------------------------------- #
+#: 搜索网格。范围必须**包住默认值**，否则"最优"只是网格边缘的伪最优。
+#:
+#: 默认值：min_area_ratio=0.0015，morph_kernel_ratio=(0.005, 0.021)，
+#: open_kernel_ratio=0.02，min_aspect=2.0，max_aspect=5.5，box_padding=5(px)。
+#:
+#: 量纲提醒：``morph_kernel_ratio`` 与 ``open_kernel_ratio`` 都是**相对图宽/图高的
+#: 比例**（不是千分比）。此前网格给到 (0.025, 0.60)，等于用图宽 60% 的核做形态学
+#: 运算 —— 那会把整幅图糊成一团，选出来的"最优"是退化解，不能用。
 GRID_QUICK = {
-    "min_area_ratio": (0.0004, 0.0008, 0.0015, 0.003),
-    "morph_kernel_ratio": ((0.012, 0.30), (0.018, 0.45), (0.025, 0.60)),
+    "min_area_ratio": (0.0005, 0.0010, 0.0015, 0.0025),
+    "morph_kernel_ratio": ((0.003, 0.012), (0.005, 0.021), (0.008, 0.030)),
 }
 
 GRID_FULL = {
-    "min_area_ratio": (0.0003, 0.0006, 0.0008, 0.0012, 0.002, 0.003),
-    "morph_kernel_ratio": ((0.010, 0.25), (0.014, 0.35), (0.018, 0.45),
-                           (0.022, 0.55), (0.028, 0.65)),
-    "open_kernel_ratio": (0.008, 0.012, 0.018, 0.025),
+    "min_area_ratio": (0.0005, 0.0008, 0.0015, 0.0022, 0.0035),
+    "morph_kernel_ratio": ((0.003, 0.010), (0.004, 0.015), (0.005, 0.021),
+                           (0.007, 0.028), (0.010, 0.038)),
+    "open_kernel_ratio": (0.008, 0.014, 0.020, 0.028),
     "min_aspect": (1.8, 2.0, 2.2),
     "max_aspect": (4.5, 5.5, 6.5),
-    "box_padding": (0.02, 0.06, 0.10),
+    "color_margin": (0.02, 0.04, 0.07),
 }
 
 
@@ -334,6 +342,22 @@ def main() -> int:
     ap.add_argument("--grid", choices=["none", "quick", "full"], default="none")
     ap.add_argument("--apply", action="store_true", help="把最优参数写入 config.tuned.json")
     ap.add_argument("--out", default="reports", help="报告输出目录（相对项目根）")
+    ap.add_argument(
+        "--save-baseline", metavar="PATH",
+        help="把本次基线指标存成回归基线文件（之后可用 --baseline 对照）",
+    )
+    ap.add_argument(
+        "--baseline", metavar="PATH",
+        help=(
+            "对照已存的基线指标：fitness 掉超过 --tolerance 就以非零码退出。"
+            "注意必须在**同一个数据集**上跑才可比。CI 无法内嵌带标注数据集，"
+            "因此这是本地/自建 CI 用的能力"
+        ),
+    )
+    ap.add_argument(
+        "--tolerance", type=float, default=0.01,
+        help="允许的 fitness 跌幅（默认 0.01），超过即判为回归",
+    )
     args = ap.parse_args()
 
     src = Path(args.dataset)
@@ -420,6 +444,72 @@ def main() -> int:
         print("  注意：config.json 的 engine.locate 会覆盖代码默认值，"
               "下次运行即生效。")
 
+    if args.save_baseline:
+        bp = Path(args.save_baseline)
+        if not bp.is_absolute():
+            bp = ROOT / bp
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text(
+            json.dumps(
+                {
+                    "_note": (
+                        "定位回归基线：用 --baseline 对照时，fitness 跌幅超过 "
+                        "--tolerance 即判为回归。只在**同一数据集**上可比。"
+                    ),
+                    "dataset": str(src),
+                    "n_samples": len(samples),
+                    "iou_threshold": args.iou,
+                    "metrics": baseline.as_dict(),
+                },
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"回归基线已写入: {bp}")
+        print(f"  之后可用: python tools/eval_locate.py {args.dataset} "
+              f"--baseline {args.save_baseline}")
+
+    if args.baseline:
+        return _check_against_baseline(args, baseline, len(samples))
+
+    return 0
+
+
+def _check_against_baseline(args, current: "Report", n_samples: int) -> int:
+    """把当前指标与基线对照，跌幅超阈值则返回非零码（可用于 CI 卡口）。"""
+    bp = Path(args.baseline)
+    if not bp.is_absolute():
+        bp = ROOT / bp
+    if not bp.exists():
+        print(f"基线文件不存在: {bp}", file=sys.stderr)
+        return 1
+
+    saved = json.loads(bp.read_text(encoding="utf-8"))
+    old = saved.get("metrics", {})
+    print(f"\n{'=' * 74}\n对照基线: {bp}")
+    if saved.get("n_samples") != n_samples:
+        print(
+            f"  ⚠ 样本数不一致（基线 {saved.get('n_samples')} vs 现在 {n_samples}），"
+            "指标不可比，请在同数据集同切分上重跑",
+            file=sys.stderr,
+        )
+        return 2
+
+    old_fit = float(old.get("fitness", 0.0))
+    new_fit = current.fitness
+    delta = new_fit - old_fit
+    print(f"  fitness: {old_fit:.4f} -> {new_fit:.4f}  ({delta:+.4f})")
+    for key in ("recall30", "recall50", "mean_iou", "precision", "center_hit"):
+        if key in old:
+            print(f"  {key:<10}: {float(old[key]):.4f} -> {getattr(current, key):.4f}")
+
+    if delta < -abs(args.tolerance):
+        print(
+            f"\n✗ 回归！fitness 跌幅 {-delta:.4f} 超过容忍 {abs(args.tolerance):.4f}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\n✓ 未发现回归（容忍 {-abs(args.tolerance):+.4f}）")
     return 0
 
 

@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import csv
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from PySide6.QtGui import QFont, QImage, QPixmap, QAction, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -44,9 +42,16 @@ from PySide6.QtWidgets import (
 
 from ..config import Config
 from ..engines import describe_engines
-from ..types import COLOR_SWATCH, PlateColor, PlateResult
-from ..utils.image import draw_result, imread, to_display_rgb
+from ..types import PlateColor, PlateResult
+from ..utils.image import imread, to_display_rgb
 from ..utils.logging_setup import get_logger, memory_handler
+from ..utils.security import (
+    PrivacyPolicy,
+    SecurityError,
+    check_file,
+    check_image,
+    mask_plate,
+)
 from .worker import CameraWorker, ImageWorker
 
 logger = get_logger("ui.window")
@@ -111,6 +116,13 @@ class MainWindow(QMainWindow):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
+        #: 安全策略：与 CLI / Python API 走同一份 config.security（v2.3.1 修复）。
+        #: 此前界面层完全没有接入安全层 —— 图片不做大小/像素校验、CSV 导出
+        #: 明文写车牌号、日志脱敏过滤器也没装，README 的「更安全」在 GUI 上不成立。
+        self._security = config.security.to_context()
+        self._security.setup()
+        self.limits = self._security.limits
+        self.privacy: PrivacyPolicy = self._security.privacy
         self._worker: ImageWorker | None = None
         self._camera: CameraWorker | None = None
         self._history: list[PlateResult] = []
@@ -127,6 +139,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._refresh_engine_list()
         self._refresh_log_view()
+        if self.privacy.mask_output:
+            logger.info("隐私策略已启用：导出的 CSV 中车牌号将被打码")
 
         # 日志面板定时刷新
         self._log_timer = QTimer(self)
@@ -349,7 +363,7 @@ class MainWindow(QMainWindow):
         root = Path(folder)
         files = sorted(
             p for p in root.iterdir()
-            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+            if p.is_file() and p.suffix.lower() in self.limits.allowed_extensions
         )
         if not files:
             QMessageBox.information(self, "提示", "该文件夹中没有图片文件。")
@@ -362,6 +376,15 @@ class MainWindow(QMainWindow):
             return
         if not files:
             return
+
+        # 与 CLI 一致地套用批量文件数上限，避免一次塞入过多文件
+        limit = self.limits.max_batch_files
+        if len(files) > limit:
+            logger.warning("批量任务超过上限 %d，已截断", limit)
+            QMessageBox.information(
+                self, "提示", f"选择 {len(files)} 张，超过上限 {limit} 张，已截断。"
+            )
+            files = files[:limit]
 
         self._batch_queue = list(files)
         self._batch_total = len(files)
@@ -379,8 +402,10 @@ class MainWindow(QMainWindow):
 
         path = self._batch_queue.pop(0)
         try:
-            img = imread(path)
-        except Exception as exc:
+            # 走安全层：校验扩展名白名单、文件大小上限后再解码
+            img = imread(check_file(path, self.limits))
+            check_image(img, self.limits)
+        except (SecurityError, OSError, ValueError) as exc:
             logger.warning("跳过 %s: %s", path, exc)
             self._batch_done += 1
             self.progress.setValue(self._batch_done)
@@ -391,7 +416,9 @@ class MainWindow(QMainWindow):
         self._show_image(img)
         self.setWindowTitle(f"{self.config.ui.window_title} - {path.name}")
 
-        self._worker = ImageWorker(self.config.engine.default, self.config, self)
+        self._worker = ImageWorker(
+            self.config.engine.default, self.config, limits=self.limits, parent=self
+        )
         self._worker.set_array(img, source=str(path))
         self._worker.finished_with_results.connect(self._on_image_done)
         self._worker.failed.connect(self._on_image_failed)
@@ -465,6 +492,7 @@ class MainWindow(QMainWindow):
             self.config,
             interval=self.config.ui.camera_interval,
             resolution=self.config.ui.camera_resolution,
+            limits=self.limits,
         )
         self._camera.frame_ready.connect(self._on_camera_frame)
         self._camera.results_ready.connect(self._on_camera_results)
@@ -555,14 +583,18 @@ class MainWindow(QMainWindow):
                 writer.writerow(
                     [
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        res.text,
+                        # 导出是"输出"，受 privacy 策略约束（此前直接写明文）
+                        mask_plate(res.text, self.privacy),
                         res.color.label,
                         f"{res.confidence:.4f}",
                         res.engine,
                         str(res.bbox),
                     ]
                 )
-        QMessageBox.information(self, "完成", f"已导出 {len(self._history)} 条到\n{path}")
+        hint = "（车牌号已按隐私策略打码）" if self.privacy.mask_output else ""
+        QMessageBox.information(
+            self, "完成", f"已导出 {len(self._history)} 条{hint}到\n{path}"
+        )
 
     def on_clear_history(self) -> None:
         self._history.clear()

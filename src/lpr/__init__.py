@@ -39,7 +39,7 @@ from .utils.security import (
     verify_model,
 )
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 __all__ = [
     # 高层 API

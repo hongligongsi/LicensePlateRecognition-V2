@@ -1,10 +1,13 @@
-# 车牌识别系统 v2.1（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.1（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
 本项目是 [hongligongsi/License-Plate-Recognition](https://github.com/hongligongsi/License-Plate-Recognition) 的现代化升级版。原项目最后一次提交停留在 2021 年，其依赖（Python 3.4 / OpenCV 3.4 / numpy 1.14）在如今的机器上已无法安装。v2 在保留原算法思想的基础上全面重构，详见 [UPGRADE.md](docs/UPGRADE.md)。
 
 > **v2.1 主题：更精准、更快速、更安全、更全面。** 详见下方「v2.1 四大升级」。
+> v2.2 补上「版式维度」与 12 大类车牌；v2.3 做召回分层与形近字纠错；
+> v2.3.1 修掉 4 个真 Bug（安全层覆盖、采集/识别解耦、模型校验三态）并补上 CI。
+> 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
 
@@ -59,10 +62,32 @@
 | `mask_plate` / `scrub_value` | 单值打码 + **递归清洗任意嵌套结构**（`meta.variants` 这类旁路字段也会被打掉） |
 | `MaskingFilter` | 日志过滤器，日志里的车牌号自动打码 |
 | `RateLimiter` | 令牌桶限流，防并发识别打满机器 |
-| `verify_model` / `sha256_file` | 模型哈希白名单校验，检测模型篡改 |
+| `verify_model` / `check_model` / `sha256_file` | 模型哈希白名单校验，检测模型篡改。**三态结果**（`ok` / `skipped` / `mismatch`），"未配置白名单"不会再显示成"✓ 通过" |
 | `safe_output_path` | 防路径穿越（`../../etc/passwd` 这类会被拦回基准目录） |
 
 **脱敏是端到端生效的**：控制台输出、JSON、CSV、嵌套 `meta` 全部覆盖，均有单元测试守住。
+
+**安全层覆盖三条入口**（v2.3.1 修复）：
+
+| 入口 | 输入校验 | 输出脱敏 | 日志脱敏 | 模型校验 |
+|---|---|---|---|---|
+| `lpr` CLI | ✅ | ✅ | ✅ | ✅ |
+| Python API（`Recognizer`） | ✅ | ✅ | ✅ | — |
+| 图形界面（`lpr gui`） | ✅ | ✅ | ✅ | — |
+
+> v2.3.1 之前，Python API 会**静默忽略** `config.json` 的 `security` 段
+> （`LPR_MASK_OUTPUT` 也对 API 无效），图形界面则**完全没有接入安全层**
+> —— 图片不校验、CSV 导出裸写明文。现在三条入口共用同一份 `config.security`。
+
+模型哈希白名单开箱可用（`config.json` 的 `security.model_hashes` 已内置随仓库
+分发的两个 SVM 模型哈希），换自训练模型后需同步更新，否则会被判为不匹配：
+
+```bash
+lpr models --verify
+#   svm.dat                    4.38 MB  2026-10-11 23:05:06
+#     ✓ 哈希校验通过 (ce3fdffb3e9529fc…)
+# （✓=已校验通过，—=未配置哈希白名单故未校验，✗=不匹配）
+```
 
 ```bash
 lpr predict car.jpg --engine deep --mask          # 控制台输出打码
@@ -125,11 +150,39 @@ lpr predict ./photos/ --save-annotated out/ann --report out/   # 标注图 + JSO
 lpr predict car.jpg --engine deep --mask --json   # 脱敏输出
 lpr predict ./photos/ --color 危险品              # 只保留危险品运输牌
 lpr predict ./photos/ --color 黄色,危险品          # 多底色过滤（逗号分隔）
+lpr predict ./photos/ --engine deep --workers 8   # 多进程并行（大批量时用）
 lpr video parking.mp4 --stride 10 --output out.mp4 # 视频识别（跳帧 + 标注输出）
 lpr check 京A1234危 京AD77972 --fix               # 校验号码合法性并纠错
-lpr models --verify                               # 查看模型信息与哈希
+lpr models --verify                               # 查看模型信息与哈希校验
 lpr gui                                           # 图形界面
 ```
+
+### 批量并行（`--workers`）
+
+```bash
+lpr predict ./photos/ --engine deep --workers 8    # 8 进程
+lpr predict ./photos/ --engine deep --workers 0    # 按可调度 CPU 数自动
+```
+
+行为约定：
+
+- **顺序不变**：多进程结果顺序与传入顺序一致，和串行路径完全一样
+- **结果不带 ROI**：车牌 ROI 图像跨进程传输开销远大于收益，`workers > 1` 时
+  `roi` 恒为 `None`；需要 ROI 就用 `workers=1`
+- **单条失败被隔离**：某个文件读不出/识别异常只会记一条 warning，不会中断整批
+- **小批量自动退回串行**：文件数不足以摊平子进程启动 + 模型重新加载的固定成本时
+  （见 `lpr/batch.py` 的 `MIN_FILES_PER_WORKER`），即使指定了 `--workers` 也会走串行
+
+> ⚠️ **先量再开。** 并行收益强依赖机器：本项目的开发/CI 环境 CPU 配额受限
+> （`os.cpu_count()` 报 20，但**纯 CPU 计算**用 4 进程实测只有 `0.49x`），
+> 在那里并行只会更慢 —— 这不是实现的锅。换到真实多核机器上用基准脚本量一下：
+>
+> ```bash
+> python tools/bench_workers.py --images ./photos --engine deep --workers 1 4 8 --cpu-control
+> ```
+>
+> `--cpu-control` 会同时测一遍纯 CPU 计算的并行扩展性，用来区分"是机器没余量"
+> 还是"是识别本身没被并行化"。
 
 ### Python API
 
@@ -170,58 +223,118 @@ for r in engine.predict("car.jpg"):
 
 运行 `lpr gui`：
 - **打开图片**（Ctrl+O）/ **批量识别文件夹**：结果表格展示，可导出 CSV
-- **摄像头实时识别**：采集与识别分离，画面流畅不掉帧（原版每 2 秒冻结一次）
+- **摄像头实时识别**：采集与识别在**两个独立线程**里跑 —— 采集线程只管 `cap.read()`
+  和刷画面，识别线程始终取"最新一帧"推理。识别慢于采集时不会积压帧，
+  画面按摄像头原生帧率刷新
 - 引擎下拉框热切换，不可用的引擎自动置灰并给出安装提示
+
+> v2.3.1 修复：此前 `CameraWorker` 号称"采集与识别解耦"，实际是把
+> `engine.predict(frame)` 写在采集循环里**同步执行**（deep 引擎约 200ms/张，
+> 采集帧率被拖到 ~5fps），而 `_recognizing` 标志只在 `__init__` 赋值一次、
+> 从没被读过 —— 是段死逻辑。现在是真的双线程，并有源码级回归护栏。
 
 ## 项目结构
 
 ```
 src/lpr/
-├── types.py            # PlateResult / PlateColor 统一数据契约
+├── types.py            # PlateResult / PlateColor / PlateLayout 统一数据契约
 ├── config.py           # 集中配置（JSON + 环境变量，含 SecurityConfig）
 ├── api.py              # 高层 API：Recognizer / RecognizeOutcome / BatchOutcome
+├── batch.py            # 多进程批量识别（分片、按序拼回、小批量退回串行）
 ├── plate_rules.py      # 车牌语法规则：格式识别、纠错、合法性评分
 ├── tracker.py          # 跨帧多车牌跟踪（IoU + 号码一致性投票）
 ├── cli.py              # 命令行入口
+├── py.typed            # 声明本包带类型标注（下游可依赖）
 ├── engines/
 │   ├── base.py         # 引擎抽象接口
-│   ├── registry.py     # 引擎注册表（可扩展第三方引擎）
+│   ├── registry.py     # 引擎注册表 + 推理串行锁 INFERENCE_LOCK
 │   ├── locate.py       # 车牌定位（向量化、透视矫正、颜色判定）
 │   ├── segment.py      # 字符分割（投影波峰 + 动态对齐到 7 字符）
 │   ├── svm_classifier.py  # SVM 字符分类（兼容原版模型 + 置信度）
 │   ├── cv_engine.py    # 传统 CV 引擎
 │   └── deep_engine.py  # 深度学习引擎（定位引导 + 纯识别加速 + 双行牌）
 ├── ui/
-│   ├── window.py       # PySide6 主窗口
-│   └── worker.py       # 识别/摄像头线程
+│   ├── window.py       # PySide6 主窗口（已接入安全层）
+│   └── worker.py       # 采集合识别分离的线程（CameraWorker + _RecognizeThread）
 └── utils/
     ├── image.py        # 图像 IO（中文路径 / EXIF）、标注绘制（Pillow 中文字体）
-    ├── security.py     # 安全层：Limits / PrivacyPolicy / 脱敏 / 限流 / 模型校验
+    ├── security.py     # 安全层：Limits / PrivacyPolicy / 脱敏 / 限流 / 模型校验三态
     └── logging_setup.py
-tools/benchmark.py      # 基准脚本（量化四项升级收益）
-tools/make_color_samples.py  # 合成六色样张，核对底色判定
-models/                 # 预训练 SVM 模型（原版权重）
-samples/                # 测试样张
-tests/                  # 232 项 pytest 测试
+tools/
+├── benchmark.py              # 引擎性能基准（耗时/QPS/命中率）
+├── bench_workers.py          # 多进程批量加速基准（含纯 CPU 并行对照）
+├── eval_locate.py            # 定位客观评测 + 网格搜索（支持 --save-baseline/--baseline）
+├── eval_weak.py              # 无标注真实图的弱监督评测（合法率/候选率，支持 --override 调参对照）
+├── tune_thresholds.py        # 无监督阈值调参（没有标注时的退路）
+├── tune_io.py                # 调参结果落盘（写进 engine.locate，自动备份）
+├── fetch_ccpd.py             # 稳健下载 CCPD 样张
+├── fetch_hg.py               # 下载带 YOLO 标注的评测集（支持 --limit 小规模验证）
+├── ccpd_labels.py            # CCPD 文件名标注解析
+├── make_color_samples.py     # 合成六色样张，核对底色/危险品判定
+└── make_regression_baseline.py  # 生成真实样张行为快照基线
+models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
+samples/  img/          # 真实测试样张（回归基线的数据来源）
+tests/                  # 472 项 pytest 测试（含 tests/baselines/ 行为基线）
+.github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 ```
 
 ## 测试与基准
 
 ```bash
-pytest tests/ -q                                    # 232 项单元/集成测试
+pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
+pytest tests/ -q                                    # 472 项单元/集成测试
+pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
+ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
 ```
 
 基准脚本会输出引擎性能（耗时/QPS/命中率）、安全防护逐项检查、覆盖范围统计，可直接引用。
 
+### 回归防线（CI 拦截）
+
+CI（`.github/workflows/ci.yml`）在 push / PR 时跑三件事：
+
+1. **ruff + mypy** 静态检查（`ruff check` / `ruff format --check` / `mypy`）
+2. **多版本 pytest**：Ubuntu 上 Python 3.10~3.13，外加 Windows 3.12（本项目大量
+   中文路径 / 路径分隔符逻辑与 Windows 强相关，值得单独覆盖）
+3. **定位行为回归基线**（在 pytest 内）：用确定性 `cv` 引擎跑仓库自带的
+   11 张真实样张（`img/` + `samples/`），与 `tests/baselines/real_samples.json`
+   对照 —— 候选数、top 候选框（IoU ≥ 0.85）、top 底色任一漂移即失败
+
+关于"准确率"要**如实说明**：带标注的真实数据集（CCPD 的标注在镜像里被抹掉，
+公开 YOLO 集只有 320 张）不适合进仓库（体积 + 版权），所以 CI 里**没有**准确率门槛。
+我们试过用**合成图**替代 —— 不可行：合成牌只有放大到占画面一半宽才勉强被定位到，
+且找到的是字符区而不是车牌区，拿它算准确率是自欺欺人，所以那条路已经放弃。
+
+真实准确率请在本地用自己的数据集评：
+
+```bash
+python tools/fetch_hg.py --out datasets/hg --limit 60   # 拉一套带标注的公开集（可选）
+python tools/eval_locate.py datasets/hg/test            # 打基线
+python tools/eval_locate.py datasets/hg/test --grid quick --save-baseline reports/base.json
+python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # 之后每次改参数都跑这个
+```
+
 ## 已知限制
 
-- 传统 CV 引擎的 SVM 字符识别精度有限（原版模型训练样本太少，中文省份尤其差），且对任意输入都输出置信度 1.0 —— **需要精度请用 `deep` 或 `cascade`**
+- 传统 CV 引擎的 SVM 字符识别精度有限（原版模型训练样本太少，中文省份尤其差），
+  且对任意输入都输出接近 1.0 的置信度 —— **需要精度请用 `deep` 或 `cascade`**
 - 深度引擎首次运行需下载 OCR 模型（约 10MB），之后离线可用
 - 双行牌已支持自动拆行，但极端倾斜/污损样本仍可能识别失败
 - 军牌 / 警牌（白牌特殊字符）识别率一般
-- 新能源牌与普通民用牌在 8 位串形上存在固有歧义（`京AQ7797Q` 与 `京AD77972` 串形无法区分），依赖 OCR 置信度与多帧投票消解
+- 新能源牌与普通民用牌在 8 位串形上存在固有歧义（`京AQ7797Q` 与 `京AD77972`
+  串形无法区分），依赖 OCR 置信度与多帧投票消解
+- **多进程批量（`--workers`）未在真实多核机器上验证过收益**：开发/CI 环境 CPU
+  配额受限（纯 CPU 计算 4 进程 0.49x），因此"并行更快"这个结论**我们没有证到**。
+  功能本身完整且有测试（顺序、隔离、ROI 取舍都有断言），但请自行用
+  `tools/bench_workers.py --cpu-control` 在目标机器上确认
+- **定位准确率没有 CI 门槛**（原因见上）；现有的是"行为不变"快照，能拦住回归，
+  但拦不住"一直都在错"。阈值调参已用弱监督评测复核过一轮
+  （`tools/eval_weak.py`，调参段 + 留出集双重验证）：三组候选参数无一在
+  留出集复现改善，**维持默认参数**，过程记录见 `docs/UPGRADE.md` 第九节
+- 摄像头实时识别已做到采集与识别真解耦（双线程），但 GUI 路径**没有**单元测试
+  覆盖（Qt 线程测试成本高），只有源码级回归护栏
 
 ## 许可
 

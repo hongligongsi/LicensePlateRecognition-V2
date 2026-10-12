@@ -20,12 +20,15 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from eval_locate import (  # noqa: E402
+    GRID_FULL,
+    GRID_QUICK,
     Report,
     _greedy_match,
     iou_matrix,
     load_labels,
     xywh_to_xyxy,
 )
+from lpr.config import LocateConfig  # noqa: E402
 from tune_io import apply_locate_params, load_existing_locate  # noqa: E402
 
 
@@ -225,3 +228,63 @@ class TestApplyLocateParams:
         apply_locate_params({"min_aspect": 2.0}, tmp_path)
         data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
         assert data["engine"]["locate"]["min_aspect"] == 2.0
+
+
+# --------------------------------------------------------------------------- #
+# 搜索网格的健全性
+#
+# 背景（真实踩过的坑）：网格此前给 morph_kernel_ratio 的候选是 (0.012, 0.30) ~
+# (0.025, 0.60)，而该参数的量纲是「相对图宽的比例」，0.60 = 图宽 60% 的形态学核
+# —— 那会把整幅图糊成一团。网格还整体偏大、根本没包住默认值 (0.005, 0.021)，
+# 于是选出来的"最优"只是网格边缘的退化解。下面这组测试守住这两点。
+# --------------------------------------------------------------------------- #
+class TestSearchGridSanity:
+    def test_grid_brackets_default_values(self):
+        """每个搜索维度都必须包住默认值，否则搜索无意义。"""
+        base = LocateConfig()
+        for name, grid in (("quick", GRID_QUICK), ("full", GRID_FULL)):
+            for key, values in grid.items():
+                default = getattr(base, key)
+                if isinstance(default, tuple):
+                    for i, comp in enumerate(default):
+                        lo = min(v[i] for v in values)
+                        hi = max(v[i] for v in values)
+                        assert lo <= comp <= hi, (
+                            f"{name} 网格 {key}[{i}] 未包住默认值 {comp}（范围 {lo}~{hi}）"
+                        )
+                else:
+                    assert min(values) <= default <= max(values), (
+                        f"{name} 网格 {key} 未包住默认值 {default}"
+                    )
+
+    def test_kernel_ratios_are_plausible(self):
+        """核比例必须是"小比例"，不能出现 0.5 这种把整图糊掉的量级。"""
+        for grid in (GRID_QUICK, GRID_FULL):
+            for pair in grid.get("morph_kernel_ratio", ()):
+                assert 0 < pair[0] < 0.1, f"核高比例 {pair[0]} 不像核，倒像整幅图"
+                assert 0 < pair[1] < 0.15, f"核宽比例 {pair[1]} 不像核，倒像整幅图"
+
+    def test_grid_values_have_correct_types(self):
+        """参数类型要和 dataclass 声明一致（box_padding 是 int 像素，不是比例）。"""
+        base = LocateConfig()
+        for grid in (GRID_QUICK, GRID_FULL):
+            for key, values in grid.items():
+                default = getattr(base, key)
+                if isinstance(default, tuple):
+                    assert all(isinstance(v, tuple) and len(v) == len(default)
+                               for v in values), f"{key} 候选必须是等长 tuple"
+                elif isinstance(default, float):
+                    assert all(isinstance(v, float) for v in values), f"{key} 必须是 float"
+                elif isinstance(default, int):
+                    assert all(isinstance(v, int) for v in values), f"{key} 必须是 int"
+
+    def test_grid_does_not_contain_pixel_params(self):
+        """像素型参数（如 box_padding）不该出现在比例网格里 —— 容易设成小数。"""
+        for grid in (GRID_QUICK, GRID_FULL):
+            assert "box_padding" not in grid
+
+    def test_every_grid_key_exists_on_config(self):
+        base = LocateConfig()
+        for grid in (GRID_QUICK, GRID_FULL):
+            for key in grid:
+                assert hasattr(base, key), f"网格里的 {key} 不是 LocateConfig 字段"

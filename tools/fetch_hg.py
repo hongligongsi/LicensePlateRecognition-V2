@@ -54,6 +54,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="datasets/hg", help="输出根目录（相对项目根）")
     ap.add_argument("--batch", type=int, default=25, help="每批文件数")
+    ap.add_argument(
+        "--limit", type=int, default=0,
+        help="只取前 N 对（0=全部）。做小规模验证时用，避免下满 300+ 张",
+    )
     args = ap.parse_args()
 
     out = ROOT / args.out
@@ -82,6 +86,10 @@ def main() -> int:
         stem = Path(ip).stem
         lp = f"test/labels/{stem}.txt"
         pairs.append((ip, lp))
+
+    if args.limit > 0:
+        pairs = pairs[: args.limit]
+        log(f"按 --limit 截取前 {len(pairs)} 对")
 
     t0 = time.time()
     ok_img = ok_lab = 0
