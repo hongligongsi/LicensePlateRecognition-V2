@@ -17,19 +17,20 @@
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 
 import numpy as np
 
 from ..config import EngineConfig
+from ..plate_rules import identify_format
 from ..types import PlateColor, PlateResult
 from ..utils.image import imread
 from ..utils.logging_setup import get_logger
 from .base import BaseEngine, EngineUnavailable
 from .locate import locate_plates, refine_by_color
 from .segment import separate_characters
+from ..plate_rules import MILITARY_HEADS
 from .svm_classifier import (
     PROVINCES,
     build_alphanum_classifier,
@@ -40,9 +41,6 @@ logger = get_logger("engines.cv")
 
 #: 蓝/白/黑牌是深色字浅色底；黄/绿牌相反
 _DARK_TEXT_COLORS = {PlateColor.BLUE, PlateColor.WHITE, PlateColor.BLACK}
-
-#: 车牌号码：省份简称 + 字母 + 5~6 位（新能源 6 位，普通 5 位）
-_PLATE_PATTERN = re.compile(r"^[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新]" r"[A-Z][A-Z0-9]{4,6}$")
 
 
 def _is_dark_text(color: PlateColor) -> bool:
@@ -57,16 +55,21 @@ def _fix_confusions(text: str) -> str:
       * 第 1 位必须是省份简称（汉字）
       * 第 2 位必须是字母（不含 I、O）
       * 第 3~7 位是数字或字母
+
+    注意第 2 位"数字→字母"只对省份牌与军队牌执行：使领馆牌
+    （``使123456``）与武警牌（``WJ京1234X``）的第 2 位本来就是数字，
+    此前无条件字母化会把它们破坏成非法号码。
     """
     if len(text) < 2:
         return text
 
     chars = list(text)
     # 第 2 位必须是字母：数字 0→O 是错的（O 不合法），应改成相邻合法字母
-    if chars[1].isdigit():
-        # 数字 0/1/2/3... 被识别成第 2 位时，最可能是 O/I/Z 的误判
-        mapping = {"0": "D", "1": "J", "2": "Z", "5": "S", "8": "B", "6": "G"}
-        chars[1] = mapping.get(chars[1], "A")
+    if chars[0] in PROVINCES or chars[0] in MILITARY_HEADS:
+        if chars[1].isdigit():
+            # 数字 0/1/2/3... 被识别成第 2 位时，最可能是 O/I/Z 的误判
+            mapping = {"0": "D", "1": "J", "2": "Z", "5": "S", "8": "B", "6": "G"}
+            chars[1] = mapping.get(chars[1], "A")
 
     # I、O 在车牌第 2 位以后的字母位不出现，替换为易混淆的数字
     for i in range(1, len(chars)):
@@ -79,7 +82,12 @@ def _fix_confusions(text: str) -> str:
 
 
 def _score_text(text: str) -> float:
-    """给一个候选号码打合法性分数，用于多候选之间的选择。"""
+    """给一个候选号码打合法性分数，用于多候选之间的选择。
+
+    合法性走 :func:`plate_rules.identify_format`——它覆盖军牌/警牌/
+    使领馆/武警等全部特种格式。此前本函数用只认省份牌的本地正则，
+    特种牌一律匹配失败，多候选时被系统性压到普通牌之下。
+    """
     if not text:
         return -1.0
     score = 0.0
@@ -89,9 +97,12 @@ def _score_text(text: str) -> float:
         score += 1.5
     else:
         score -= 1.0
-    if _PLATE_PATTERN.match(text):
+    if identify_format(text) is not None:
         score += 2.0
     if text[0] in PROVINCES:
+        score += 1.5
+    elif identify_format(text) is not None:
+        # 特殊字头（军/空/海/使/WJ…）：格式本身已合法，不再重罚
         score += 1.5
     else:
         score -= 1.0

@@ -56,6 +56,62 @@ _REFINE_BASE: dict[PlateColor, PlateColor] = {
     PlateColor.HAZMAT: PlateColor.BLACK,
 }
 
+#: 军/警/武警白牌的「红色字符」信号阈值（占比区间）。
+#:
+#: 这是识别白底特种牌**唯一可靠的物理特征**：按 GA36/军牌规范，
+#: 军牌字头（军/空/海…）、警牌「警」字、武警「WJ」均为**红色**，
+#: 一块特种牌上红色字符通常占 3%~10% 面积。
+#:
+#: 为什么不用别的方法：实测阴影下的警牌（img/police.jpg）白底灰度中位数
+#: 只有 ~120，HSV 白色区间（V>=200）完全罩不住；放宽到 V>=150 也只有
+#: 0.7% 命中。而"白/黑谁占比大"的极性判定会反过来——阴影白牌的边缘
+#: 环带中位灰度（59）比真黑牌使领馆（88）还暗。
+#:
+#: 上限 0.15 用来挡大片红色车身/招牌（single_blue.jpg 的红色车身误检区
+#: 占 0.196）；下限 0.03 挡零星红色噪声（shi_lin_guan.jpg 尾灯反射 0.023）。
+#: 阈值仅由仓库内 3 张样张标定，样本量小，后续有更多特种牌样张应再校准。
+_RED_SIGN_RATIO = (0.03, 0.15)
+
+#: 红色像素的 HSV 区间（两段：0~10 与 170~180 跨越 H 环）。
+_RED_LOW = ((0, 80, 70), (10, 255, 255))
+_RED_HIGH = ((170, 80, 70), (180, 255, 255))
+
+
+def _red_mask(hsv: np.ndarray) -> np.ndarray:
+    """生成红色前景掩码（军牌字头/警牌「警」/武警「WJ」的用色）。"""
+    m1 = cv2.inRange(hsv, np.array(_RED_LOW[0], np.uint8), np.array(_RED_LOW[1], np.uint8))
+    m2 = cv2.inRange(hsv, np.array(_RED_HIGH[0], np.uint8), np.array(_RED_HIGH[1], np.uint8))
+    return m1 | m2
+
+
+def _red_signal(roi: np.ndarray) -> float:
+    """返回 ROI 内红色像素占比（0~1），并做「字符大小」校验。
+
+    返回值是**过滤后**的红色占比：若最大红色连通域的高度不足 ROI 高度的
+    45%，视为散乱反射而非红色字符（真红色字符与车牌等高，
+    实测警牌「警」字高占 0.81，尾灯/招牌反射通常 <0.45）。
+    """
+    roi = ensure_bgr(roi, min_side=4)
+    if roi is None or roi.size == 0 or roi.ndim == 2:
+        return 0.0
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = _red_mask(hsv)
+    total = mask.size
+    if total == 0:
+        return 0.0
+    ratio = cv2.countNonZero(mask) / total
+    if ratio < _RED_SIGN_RATIO[0]:
+        return 0.0
+
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    if n <= 1:
+        return 0.0
+    idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    char_h = stats[idx, cv2.CC_STAT_HEIGHT] / roi.shape[0]
+    if char_h < 0.45:
+        return 0.0
+    return ratio
+
 
 def _color_mask(hsv: np.ndarray, color: PlateColor) -> np.ndarray:
     """向量化生成某颜色的掩码。"""
@@ -192,6 +248,17 @@ def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]
         if mono_ratio < 0.6 or best_ratio > mono_ratio * 0.35:
             return best_color, best_ratio
         return mono_color, mono_ratio
+
+    # ---- 军/警/武警白牌：红色字符信号。
+    # 放在彩色判定之后：hongkang1.jpg 的黄色候选里也有红色招牌反射，
+    # 但黄底会先在上一分支胜出，走不到这里——顺序本身就是一道防线。
+    # 置信度抬到 0.5（与上方危险品判定同款先例）：红色字符是"法定特征"
+    # 级别的强证据，若只报实际占比（~5%），会在 locate_plates 的
+    # "warped 与原始裁剪谁的 ratio 大"比较中被大面积黑底(0.3+)压过，
+    # 阴影警牌实测因此仍然被判黑。
+    red = _red_signal(roi)
+    if _RED_SIGN_RATIO[0] <= red <= _RED_SIGN_RATIO[1]:
+        return PlateColor.WHITE, max(white_ratio, red, 0.5)
 
     # ---- 退化为黑白判定（白牌/黑牌/临牌）
     if mono_ratio >= min_share:

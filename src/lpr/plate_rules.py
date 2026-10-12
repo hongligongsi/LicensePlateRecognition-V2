@@ -106,6 +106,53 @@ PROVINCE_LOOKALIKES: dict[str, str] = {
     "剂": "济", "挤": "济", "齐": "济",
 }
 
+#: 特殊号牌**末位后缀**的形近字 → 正确后缀（军/警/使领馆/挂车/教练等）。
+#:
+#: 省份简称有一整张形近字表，而 ``警/挂/学/危/使/领/港/澳`` 这些特种牌
+#: 专属字符此前**没有任何纠错映射** —— OCR 把「警」认成「敬」、「领」认成
+#: 「顿」时整条号码直接判无效。这是特种牌召回低的主要原因之一。
+#:
+#: 与省份表同样的收录原则：只收字形相近、且**不会与其他常用字冲突**的映射。
+#: 该表只在**末位**使用（与 :data:`HEAD_LOOKALIKES` 按位置区分，同一个字
+#: 在首位和末位的正确归宿不同，如「字」末位→「学」、首位→「军」），
+#: 且替换后必须整体通过 :func:`is_valid` 才采纳，误伤面被严格闸门兜住。
+SUFFIX_LOOKALIKES: dict[str, str] = {
+    # 警（警用号牌末位，红字）
+    "敬": "警", "擎": "警", "惊": "警", "謦": "警",
+    # 挂（挂车号牌末位）——「桂」是省份简称，但出现在末位只可能是「挂」
+    "桂": "挂", "圭": "挂", "佳": "挂",
+    # 学（教练车号牌末位）
+    "宇": "学", "字": "学", "觉": "学",
+    # 危（危险品运输号牌末位）
+    "免": "危", "色": "危", "负": "危",
+    # 领（使领馆号牌末位）
+    "顿": "领", "颁": "领", "频": "领", "颀": "领",
+    # 使（使领馆号牌末位）
+    "便": "使", "吏": "使", "更": "使",
+    # 港 / 澳（港澳入出境号牌末位）——「奥」首位→「粤」已在省份表，末位→「澳」
+    "巷": "港", "奥": "澳", "懊": "澳",
+}
+
+#: 军队/使领馆**字头**的形近字 → 正确字头（仅用于首位）。
+#:
+#: 军牌字头（军/空/海/北/沈/兰/济/南/广/成）与使领馆「使」都是低频字，
+#: OCR 认错后整条号码失效。同样只在首位、且替换后整体合法才采纳。
+HEAD_LOOKALIKES: dict[str, str] = {
+    # 军
+    "罕": "军", "牢": "军", "字": "军", "宇": "军",
+    # 空
+    "穹": "空", "究": "空",
+    # 海
+    "每": "海", "悔": "海", "梅": "海", "诲": "海",
+    # 使
+    "便": "使", "吏": "使", "更": "使",
+    # 北 / 沈 / 兰 / 济（与省份形近字表部分重合，此处保证字头归宿一致）
+    "兆": "北",
+    "沉": "沈", "忱": "沈",
+    "岚": "兰", "烂": "兰",
+    "剂": "济", "挤": "济",
+}
+
 
 @dataclass
 class PlateFormat:
@@ -161,8 +208,14 @@ FORMATS: list[PlateFormat] = [
         7,
         7,
     ),
-    # 武警（WJ + 选省代码 + 4 位数字，如 WJ京1234X）
-    PlateFormat("武警", re.compile(rf"WJ[{PROV}][{D}]{{4}}[{AN}]$"), 7, 8),
+    # 武警（WJ + 省份 + 4 位数字 + 可选尾位字母，如 WJ京1234X）。
+    # 尾位字母改为可选：部分批次/旧牌末位无字母（WJ京1234），
+    # 强制要求会让这类号码在严格层直接失效。
+    PlateFormat("武警", re.compile(rf"WJ[{PROV}][{D}]{{4}}[{AN}]?$"), 7, 8),
+    # 武警旧式（WJ + 2 位机构码 + 4~5 位序号，写作 WJ01-12345，
+    # 清洗分隔符后为 WJ0112345 共 9 位）。新式武警第 3 位是省份汉字，
+    # 与纯数字形态无重叠，不会互相误吞。
+    PlateFormat("武警", re.compile(rf"WJ[{D}]{{6,7}}$"), 8, 9),
     # 使领馆（省份 + 3 位数字 + 使/领，或 使 + 6 位数字）
     PlateFormat("使领馆", re.compile(rf"[{PROV}][{D}]{{3}}[使领]$"), 5, 6),
     PlateFormat("使领馆", re.compile(rf"使[{D}]{{6}}$"), 7, 7),
@@ -227,8 +280,8 @@ LOOSE_STRUCTURE = re.compile(
     rf"|[军空海北沈兰济南广成使][{L}][{AN}]{{3,7}}[警挂学危]?"
     # 旧式军牌：省份 + 军用字母 + 5 位数字
     rf"|[{PROV}][{''.join(sorted(LEGACY_MILITARY_LETTERS))}][{D}]{{5}}"
-    # 武警：WJ + 省份 + 4 位 + 可选 1 位
-    rf"|WJ[{PROV}][{D}]{{4}}[{AN}]?"
+    # 武警：WJ + 省份 + 4 位 + 可选 1 位；或旧式 WJ + 纯数字
+    rf"|WJ[{PROV}][{D}]{{4}}[{AN}]?|WJ[{D}]{{5,7}}"
     # 使领馆：纯数字 + 使，或 省份/使 开头
     rf"|使[{D}]{{4,6}}|[{PROV}][{D}]{{3}}[使领]"
     # 民航：民航 + 管理局字母 + 3~5 位数字
@@ -270,6 +323,21 @@ def _title_province(text: str) -> str:
     return text
 
 
+def _fix_io_inplace(chars: list[str], changes: list[str], start: int = 2) -> None:
+    """就地纠正 ``start`` 位之后的 I/O 混淆（I→1、O→0）。
+
+    军队/使领馆/武警牌同样受此约束（序号位不出现 I、O），
+    此前 :func:`correct` 对这类字头**早退**，导致这一规则从不执行。
+    """
+    for i in range(start, len(chars)):
+        if chars[i] == "I":
+            changes.append(f"第 {i + 1} 位 I → 1")
+            chars[i] = "1"
+        elif chars[i] == "O":
+            changes.append(f"第 {i + 1} 位 O → 0")
+            chars[i] = "0"
+
+
 def correct(text: str) -> tuple[str, list[str]]:
     """按车牌语法纠正号码，返回 ``(纠正后号码, 改动说明列表)``。
 
@@ -289,6 +357,12 @@ def correct(text: str) -> tuple[str, list[str]]:
     if not text:
         return text, changes
 
+    # ---- 规则 -1：已经合法的号码一个字符都不动。
+    # 此前没有这条短路，使领馆牌「京123使」（第 2 位合法地是数字）会被
+    # "第 2 位必须字母"的省份规则强行改成 京J23使，把合法号码纠成非法。
+    if is_valid(text):
+        return text, changes
+
     chars = list(text)
 
     # ---- 规则 0：省份形近字纠正（OCR 最常见的一类错误）
@@ -301,10 +375,37 @@ def correct(text: str) -> tuple[str, list[str]]:
             changes.append(f"首位 {chars[0]!r} → {fixed_prov!r}（形近省份简称）")
             chars[0] = fixed_prov
 
+    # ---- 规则 0b：军队/使领馆字头形近字纠正
+    # 与省份表同理：军牌字头（军/空/海…）被认成"罕/穹/每"时整条号码失效。
+    # 替换后必须整体合法才采纳（is_valid 是硬闸门），采纳即返回——
+    # 否则后续"第 2 位必须字母"等省份专属规则会把数字位改坏
+    # （使领馆牌第 2 位本来就是数字）。
+    if chars and chars[0] not in PROVINCE_CHARS and len(chars) >= 2:
+        fixed_head = HEAD_LOOKALIKES.get(chars[0])
+        if fixed_head is not None:
+            trial = fixed_head + "".join(chars[1:])
+            if is_valid(trial):
+                changes.append(f"字头 {chars[0]!r} → {fixed_head!r}（形近军队/使领馆字头）")
+                return trial, changes
+
+    # ---- 规则 0c：特殊**末位后缀**形近字纠正
+    # "警"被认成"敬"、"挂"被认成"桂"、"领"被认成"顿"…
+    # 同样只在末位使用、替换后整体合法才采纳、采纳即返回（理由同上）。
+    if len(chars) >= 2:
+        fixed_suf = SUFFIX_LOOKALIKES.get(chars[-1])
+        if fixed_suf is not None:
+            trial = "".join(chars[:-1]) + fixed_suf
+            if is_valid(trial):
+                changes.append(f"末位 {chars[-1]!r} → {fixed_suf!r}（形近特种牌后缀）")
+                return trial, changes
+
     # ---- 规则 1：首位必须是省份简称
     if chars[0] not in PROVINCE_CHARS:
-        # 特例：军队字头、"使"字头、武警 WJ
+        # 特例：军队字头、"使"字头、武警 WJ、民航——跳过"省份专属"规则，
+        # 但**仍执行序号位的通用纠正**（I/O 混淆对特种牌同样存在，
+        # 此前在这里整体早退，军A1O345 里的 O 从来没被修过）。
         if chars[0] in MILITARY_HEADS or chars[0] in ("使", "W") or chars[0] == "民":
+            _fix_io_inplace(chars, changes)
             return "".join(chars), changes
         # 旧式军牌字母字头（如 V12345）会被误判，此处不做纠正
         changes.append(f"首位 {chars[0]!r} 不是省份简称")
@@ -320,13 +421,7 @@ def correct(text: str) -> tuple[str, list[str]]:
                 chars[1] = fixed
 
     # ---- 规则 3：第 3 位起不允许 I、O
-    for i in range(2, len(chars)):
-        if chars[i] == "I":
-            changes.append(f"第 {i + 1} 位 I → 1")
-            chars[i] = "1"
-        elif chars[i] == "O":
-            changes.append(f"第 {i + 1} 位 O → 0")
-            chars[i] = "0"
+    _fix_io_inplace(chars, changes)
 
     candidate = "".join(chars)
     if candidate != text and is_valid(candidate):
@@ -483,6 +578,8 @@ DEFAULT_LAYOUT: dict[str, str] = {
 __all__ = [
     "PROVINCE_CHARS",
     "PROVINCE_LOOKALIKES",
+    "SUFFIX_LOOKALIKES",
+    "HEAD_LOOKALIKES",
     "SEQ_LETTERS",
     "ISSUER_LETTERS",
     "CIVIL_AVIATION_HEADS",
