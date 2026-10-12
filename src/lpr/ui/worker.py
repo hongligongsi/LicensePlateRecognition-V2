@@ -20,11 +20,13 @@
    同时 ``_recognizing`` 标志只在 ``__init__`` 赋值过一次、从此再没被读过，
    是一段死逻辑。现在改为真的双线程：采集循环里**没有任何模型推理**。
 """
+
 from __future__ import annotations
 
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -61,12 +63,12 @@ class ImageWorker(QThread):
         self.image_path: str | Path | None = None
         self.image_array: np.ndarray | None = None
 
-    def set_path(self, path: str | Path) -> "ImageWorker":
+    def set_path(self, path: str | Path) -> ImageWorker:
         self.image_path = path
         self.image_array = None
         return self
 
-    def set_array(self, img: np.ndarray, source: str = "<memory>") -> "ImageWorker":
+    def set_array(self, img: np.ndarray, source: str = "<memory>") -> ImageWorker:
         self.image_array = img
         self.image_path = source
         return self
@@ -188,6 +190,62 @@ def camera_backend() -> int:
     return cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
 
 
+def list_cameras(
+    max_index: int = 8,
+    open_camera: Callable[[int], object] | None = None,
+) -> list[int]:
+    """探测当前可用的摄像头索引（升序返回）。
+
+    逐个尝试打开再立即释放；``isOpened`` 之后还要 ``grab`` 一帧才算数——
+    部分虚拟/残留设备能通过 ``isOpened`` 却出不了帧。探测失败的索引立即
+    释放继续下一个：Windows 的 DirectShow 对不存在索引失败很快（实测全
+    扫 0~7 不足 1 秒），但 MSMF 可能各阻塞数秒，所以上限别开太大。
+
+    ``open_camera`` 供测试注入假的开设备函数。
+    """
+    import cv2
+
+    def _open(idx: int):
+        return cv2.VideoCapture(idx, camera_backend())
+
+    opener = open_camera if open_camera is not None else _open
+    found: list[int] = []
+    for idx in range(max_index):
+        cap = None
+        try:
+            cap = opener(idx)
+            if cap.isOpened() and cap.grab():
+                found.append(idx)
+        except Exception:
+            logger.debug("探测摄像头 %d 时异常", idx, exc_info=True)
+        finally:
+            if cap is not None:
+                cap.release()
+    return found
+
+
+def camera_error_message(index: int, available: list[int]) -> str:
+    """把"打不开摄像头"翻译成用户能行动的提示。
+
+    三种情况要说三种话：系统里一个摄像头都没有（查插线/禁用/占用）；
+    有但不是这个索引（直接告诉他有哪些）；其余兜底。
+    """
+    if not available:
+        return (
+            f"未检测到可用的摄像头设备（尝试打开索引 {index} 失败）。\n\n"
+            "请检查：\n"
+            "· USB 摄像头是否已插入，或笔记本摄像头是否被禁用\n"
+            "  （设备管理器 → 照相机）；\n"
+            "· 是否正被其他程序独占（会议/录屏软件等），先关闭再试；\n"
+            "· Windows 设置 → 隐私 → 相机，是否允许桌面应用访问。"
+        )
+    listed = "、".join(str(i) for i in available)
+    return (
+        f"无法打开摄像头 {index}，但检测到可用的摄像头索引：{listed}。\n"
+        "请在工具栏的「摄像头」下拉框中选择对应设备后重试。"
+    )
+
+
 class CameraWorker(QThread):
     """摄像头采集线程（**只采集，不识别**）。
 
@@ -288,7 +346,10 @@ class CameraWorker(QThread):
 
         cap = cv2.VideoCapture(self.camera_index, camera_backend())
         if not cap.isOpened():
-            self.camera_error.emit(f"无法打开摄像头 {self.camera_index}")
+            # 打不开时别只报一句索引——先扫一遍系统里有什么，提示才可行动
+            cap.release()
+            available = list_cameras()
+            self.camera_error.emit(camera_error_message(self.camera_index, available))
             return
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
@@ -334,4 +395,4 @@ class CameraWorker(QThread):
             logger.info("摄像头已释放")
 
 
-__all__ = ["ImageWorker", "CameraWorker"]
+__all__ = ["CameraWorker", "ImageWorker"]

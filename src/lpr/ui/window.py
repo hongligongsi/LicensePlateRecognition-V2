@@ -11,15 +11,17 @@
 * **阈值/参数可视化**：把最常调的几个定位参数暴露到设置面板，
   不用再改 config.js + 重启。
 """
+
 from __future__ import annotations
 
 import csv
+import threading
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QImage, QPixmap, QAction, QKeySequence
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QFont, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -52,7 +54,7 @@ from ..utils.security import (
     check_image,
     mask_plate,
 )
-from .worker import CameraWorker, ImageWorker
+from .worker import CameraWorker, ImageWorker, list_cameras
 
 logger = get_logger("ui.window")
 
@@ -113,6 +115,9 @@ def _array_to_pixmap(img_bgr: np.ndarray, max_w: int, max_h: int) -> QPixmap:
 class MainWindow(QMainWindow):
     """主窗口。"""
 
+    #: 后台探测线程 -> 主线程：可用摄像头索引列表（跨线程，自动队列投递）
+    cameras_found = Signal(list)
+
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
@@ -146,6 +151,11 @@ class MainWindow(QMainWindow):
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._refresh_log_view)
         self._log_timer.start(1500)
+
+        # 后台探测可用摄像头，填充下拉框（逐个打开设备可能各花数百毫秒，
+        # 放在 UI 线程会让窗口启动卡顿）
+        self.cameras_found.connect(self._on_cameras_found)
+        threading.Thread(target=self._probe_cameras, daemon=True).start()
 
     # ---------------------------------------------------------------- 菜单
 
@@ -202,9 +212,14 @@ class MainWindow(QMainWindow):
         self.btn_camera = QPushButton("启动摄像头")
         self.btn_camera.setObjectName("secondary")
         self.btn_camera.clicked.connect(self.on_toggle_camera)
+        # 多摄像头机器上索引 0 未必是用户想要的那个；默认探测一遍填进来
+        self.camera_combo = QComboBox()
+        self.camera_combo.setToolTip("要使用的摄像头索引（启动前自动探测）")
         toolbar.addWidget(self.btn_open)
         toolbar.addWidget(self.btn_batch)
         toolbar.addWidget(self.btn_camera)
+        toolbar.addWidget(QLabel("摄像头："))
+        toolbar.addWidget(self.camera_combo)
         toolbar.addStretch(1)
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(220)
@@ -317,7 +332,7 @@ class MainWindow(QMainWindow):
             self.engine_combo.addItem(label, info["name"])
             if not info["available"]:
                 # Qt 下拉框单项禁用需要 model API
-                from PySide6.QtGui import QStandardItemModel, QStandardItem
+                from PySide6.QtGui import QStandardItemModel
 
                 model = self.engine_combo.model()
                 if isinstance(model, QStandardItemModel):
@@ -362,7 +377,8 @@ class MainWindow(QMainWindow):
             return
         root = Path(folder)
         files = sorted(
-            p for p in root.iterdir()
+            p
+            for p in root.iterdir()
             if p.is_file() and p.suffix.lower() in self.limits.allowed_extensions
         )
         if not files:
@@ -464,12 +480,16 @@ class MainWindow(QMainWindow):
         )
 
         if best.roi is not None and best.roi.size:
-            self._last_roi_pixmap = _array_to_pixmap(best.roi, self.roi_label.width(), self.roi_label.height())
+            self._last_roi_pixmap = _array_to_pixmap(
+                best.roi, self.roi_label.width(), self.roi_label.height()
+            )
             self.roi_label.setPixmap(self._last_roi_pixmap)
 
-        chars_info = " ".join(
-            f"{t}:{c:.2f}" for t, c in zip(best.text, best.char_confidences)
-        ) if best.char_confidences else ""
+        chars_info = (
+            " ".join(f"{t}:{c:.2f}" for t, c in zip(best.text, best.char_confidences, strict=False))
+            if best.char_confidences
+            else ""
+        )
         self.meta_label.setText(
             f"耗时 {elapsed:.0f} ms｜引擎 {best.engine}｜候选 {len(results)} 个\n"
             f"bbox={best.bbox}  {chars_info}"
@@ -482,14 +502,37 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- 摄像头
 
+    def _probe_cameras(self) -> None:
+        """在后台线程里枚举可用摄像头（纯 cv2 操作，不碰任何 UI 对象）。"""
+        try:
+            found = list_cameras()
+        except Exception:
+            logger.warning("摄像头探测失败", exc_info=True)
+            found = []
+        self.cameras_found.emit(found)
+
+    def _on_cameras_found(self, found: list) -> None:
+        self.camera_combo.clear()
+        if not found:
+            # 一个都没有：仍然给个默认 0，让按钮可点、错误提示可触发
+            self.camera_combo.addItem("未检测到摄像头", 0)
+            self.camera_combo.setEnabled(False)
+            return
+        for idx in found:
+            self.camera_combo.addItem(f"摄像头 {idx}", idx)
+        self.camera_combo.setEnabled(True)
+
     def on_toggle_camera(self) -> None:
         if self._camera is not None and self._camera.isRunning():
             self._stop_camera()
             return
 
+        # 探测尚未完成时 currentData() 为 None，回落到默认索引 0
+        index = self.camera_combo.currentData()
         self._camera = CameraWorker(
             self.config.engine.default,
             self.config,
+            camera_index=index if isinstance(index, int) else 0,
             interval=self.config.ui.camera_interval,
             resolution=self.config.ui.camera_resolution,
             limits=self.limits,
@@ -531,7 +574,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "摄像头", message)
         self._stop_camera()
 
-    def closeEvent(self, event) -> None:  # noqa: N802
+    def closeEvent(self, event) -> None:
         """关窗时优雅停掉所有线程（原版这里会超时强杀）。"""
         self._log_timer.stop()
         if self._worker is not None and self._worker.isRunning():
@@ -571,9 +614,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "没有可导出的历史记录。")
             return
         default_name = f"lpr_history_{datetime.now():%Y%m%d_%H%M%S}.csv"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出 CSV", default_name, "CSV (*.csv)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "导出 CSV", default_name, "CSV (*.csv)")
         if not path:
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as fp:
@@ -592,9 +633,7 @@ class MainWindow(QMainWindow):
                     ]
                 )
         hint = "（车牌号已按隐私策略打码）" if self.privacy.mask_output else ""
-        QMessageBox.information(
-            self, "完成", f"已导出 {len(self._history)} 条{hint}到\n{path}"
-        )
+        QMessageBox.information(self, "完成", f"已导出 {len(self._history)} 条{hint}到\n{path}")
 
     def on_clear_history(self) -> None:
         self._history.clear()

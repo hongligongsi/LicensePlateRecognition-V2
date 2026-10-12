@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.3.6（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.3.7（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -427,7 +427,7 @@ tools/
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 797 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 805 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 ```
