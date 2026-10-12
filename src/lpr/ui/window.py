@@ -188,6 +188,18 @@ QComboBox QAbstractItemView {{
     selection-background-color: #e3ecff; selection-color: {_T["text"]};
     outline: none; padding: 4px;
 }}
+/* 条目文字必须显式上色：系统深色模式下默认调色板文字是浅色，
+   只给弹层设白底不设字色会变成白底白字，条目全部“隐形” */
+QComboBox QAbstractItemView::item {{
+    background: white; color: {_T["text"]};
+    min-height: 30px; padding: 4px 8px; border-radius: 6px;
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background: #e3ecff; color: {_T["text"]};
+}}
+QComboBox QAbstractItemView::item:disabled {{
+    background: white; color: {_T["muted"]};
+}}
 
 QTableWidget {{
     border: none; background: {_T["surface"]};
