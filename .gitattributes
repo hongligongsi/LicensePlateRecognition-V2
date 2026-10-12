@@ -7,3 +7,7 @@
 # 必须是 CRLF —— type 只吐字节，LF 行尾在 cmd 里不会回车，会显示成阶梯状；
 # 同时必须是 UTF-8（配合 start.bat 里的 chcp 65001）。
 tools/no-python.txt text eol=crlf
+
+# 模型文件是 OpenCV YAML 文本，会被 git 误判为文本做 CRLF/LF 归一化，
+# 导致 Windows 与 Linux 检出内容不同、sha256 校验失败（"文件可能已被篡改"）。
+*.dat binary
