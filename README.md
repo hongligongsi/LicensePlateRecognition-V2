@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.4.3（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.4.4（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -26,15 +26,18 @@
 > 两个老 Bug；v2.4.0 加严早停并引入 ROVER 风格读数融合（识别率专项）。
 > v2.4.1 修掉引擎下拉弹层条目「隐形」（白底白字）；v2.4.3 让识别历史行
 > 点击回显该条结果，并把 CI 从 5 项红修到全绿（3.10 无 `tomllib`、mypy
-> 未使用 ignore、rapidocr 版本漂移致准确率门槛抽奖、Windows 管道编码）。
+> 未使用 ignore、rapidocr 版本漂移致准确率门槛抽奖、Windows 管道编码），
+> 同时把项目许可从 MIT 切到 GPL-3.0-only；v2.4.4 新增 `yolo` 检测识别
+> 引擎骨架（第三个引擎，ONNX 推理，权重需自行准备）。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
 
-- **双引擎可切换**
+- **多引擎可切换**（三个后端共用同一套接口，`lpr engines` 可列出可用性）
   - `cv` 传统 CV 引擎：OpenCV 形态学定位 + 投影分割 + SVM 字符识别（兼容原版模型），纯 CPU、**约 28 ms/张**、零额外依赖
   - `deep` 深度学习引擎：基于 RapidOCR（ONNX）/ PaddleOCR，中文省份简称与模糊车牌的准确率远高于 SVM，**约 190 ms/张**
-  - `cascade` 级联：CV 快速定位给出候选 → 深度引擎精识别（精度与速度的折中）
+  - `cascade` 级联：CV 快速定位给出候选 → 深度引擎精识别（精度与速度的折中），默认引擎
+  - `yolo` 检测识别引擎（**骨架，待补权重**）：车牌专用检测网络，一次前向同时给出 bbox + 四角点 + 单/双层分类，再做字符识别。对**侧倾、透视变形、模糊**车牌的定位召回优于轮廓法；ONNX 推理，不需要 PyTorch。权重需自行下载/训练，放置到 `models/yolo/` 后即自动启用，详见 [models/yolo/README.md](models/yolo/README.md)
 - **现代化 GUI**（PySide6）：单图 / 批量 / 摄像头实时识别，识别不再冻结画面，历史记录可导出 CSV
 - **命令行工具**：`lpr predict`、`lpr video`、`lpr gui`、`lpr engines`、`lpr check`、`lpr models`、`lpr config`
 - **参数自适应**：定位参数以比例表达，同一套配置适配 640px～4000px 输入（原版换分辨率就失效）
@@ -267,6 +270,7 @@ lpr engines                      # 看看当前环境有哪些引擎可用
 | `cv`（基础） | 无（numpy + opencv + Pillow） | 否，`models/*.dat` 随仓库分发 |
 | `deep`（推荐） | `rapidocr-onnxruntime` | 否，模型 13.7 MB 在 wheel 内 |
 | `deep-paddle` | `paddleocr` + `paddlepaddle` | **首次运行会联网下载模型**，离线环境别用 |
+| `yolo`（实验） | `onnxruntime>=1.16` | **是**，`models/yolo/*.onnx` 需自行准备 |
 | 图形界面 | `PySide6-Essentials>=6.5` | 否 |
 
 > 界面只用到 `QtCore` / `QtGui` / `QtWidgets`，因此依赖 `PySide6-Essentials`
@@ -287,6 +291,9 @@ pip install -e ".[deep,gui]"
 
 # 可选：PaddleOCR 后端（更大更慢但部分场景更准）
 pip install -e ".[deep-paddle]"
+
+# 可选：车牌检测网络引擎（ONNX 推理，需自备权重）
+pip install -e ".[yolo]"
 
 # 开发（含测试）
 pip install -e ".[dev]"
@@ -411,7 +418,8 @@ src/lpr/
 │   ├── segment.py      # 字符分割（投影波峰 + 动态对齐到 7 字符）
 │   ├── svm_classifier.py  # SVM 字符分类（兼容原版模型 + 置信度）
 │   ├── cv_engine.py    # 传统 CV 引擎
-│   └── deep_engine.py  # 深度学习引擎（定位引导 + 纯识别加速 + 双行牌）
+│   ├── deep_engine.py  # 深度学习引擎（定位引导 + 纯识别加速 + 双行牌）
+│   └── yolo_engine.py  # 检测识别引擎（bbox + 四角点 + 单/双层，ONNX，待补权重）
 ├── ui/
 │   ├── window.py       # PySide6 主窗口（已接入安全层）
 │   └── worker.py       # 采集与识别分离的线程（CameraWorker + _RecognizeThread）
@@ -434,18 +442,20 @@ tools/
 ├── make_color_samples.py     # 合成六色样张，核对底色/危险品判定
 └── make_regression_baseline.py  # 生成真实样张行为快照基线
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
+models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 818 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 940 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
+docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 ```
 
 ## 测试与基准
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 818 项单元/集成测试
+pytest tests/ -q                                    # 940 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -480,6 +490,10 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 
 ## 已知限制
 
+- `yolo` 检测识别引擎目前只有**骨架**：注册、可用性探测、权重路径解析、CLI/GUI
+  接入都已完成，但 `_detect()` / `_recognize_all()` 尚未实现，调用会抛
+  `NotImplementedError` 并给出实现指引。想用请先按
+  [models/yolo/README.md](models/yolo/README.md) 准备 ONNX 权重
 - 传统 CV 引擎的 SVM 字符识别精度有限（原版模型训练样本太少，中文省份尤其差），
   且对任意输入都输出接近 1.0 的置信度 —— **需要精度请用 `deep` 或 `cascade`**
 - 深度引擎首次运行需下载 OCR 模型（约 10MB），之后离线可用

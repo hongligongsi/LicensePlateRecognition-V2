@@ -1591,3 +1591,72 @@ Windows 3.12 / 静态检查）全部 success。
 
 > 说明：GitHub 上历史提交旁边仍是红叉，那是**它被推上去那一刻**的快照，
 > 不会随修复自动重跑；仓库健康状态只看最新提交。
+
+---
+
+# v2.4.4 —— 许可切换到 GPL-3.0，并新增 `yolo` 检测识别引擎骨架
+
+## 一、许可：MIT → GPL-3.0-only
+
+引入 YOLO 系权重（Ultralytics 血统）会带来 **AGPL-3.0 / GPL-3.0** 的传染性
+义务，MIT 与之不兼容。因此在接入第三个引擎之前先把项目许可整体切到
+**GPL-3.0-only**（单独一次提交，便于回溯）：
+
+- `LICENSE` 换成 GPL-3.0 全文，并在文件头写下中文说明；
+- 文件尾部**保留原始 MIT 许可全文** —— MIT 允许再许可，但要求保留原版权
+  声明与许可文本，这一条不能省；
+- 另存一份 `LICENSE.MIT.original` 作为证据快照；
+- `pyproject.toml` 的 `license` 改成 `{ text = "GPL-3.0-only" }`，并补上
+  `License :: OSI Approved :: GNU General Public License v3 (GPLv3)` 分类器；
+- README 许可章节重写，明确「**v2.4.3 及更早版本以 MIT 发布，其许可状态
+  不受本次变更影响**」——已经拿到的旧版本不回溯；
+- 新增 `docs/THIRD_PARTY.md`，逐个列出运行时依赖的许可证（从已安装包的
+  元数据里读出来的，不是凭印象写的）。
+
+> 注意这不是「换成更严的许可」这么简单：GPL-3.0 要求**衍生作品整体以
+> GPL-3.0 分发**。如果将来要接 Ultralytics 官方权重，须一并接受其 AGPL
+> 条款；本项目的做法是把权重放在 `models/yolo/` 由用户自行准备，仓库
+> **不分发**权重，从而不与上游许可产生直接冲突。
+
+## 二、新增第三个引擎：`yolo`
+
+前两个引擎（`cv` / `deep`）的定位都依赖**轮廓/颜色先验**，对大幅侧倾、
+透视变形、运动模糊的车牌召回偏弱。第三个引擎改走「检测网络」路线：
+
+| 维度 | 设计 |
+|---|---|
+| 检测头 | 一次前向同时输出 bbox + **四个角点** + 单/双层分类（YOLO-pose 式） |
+| 优势 | 角点直接给出，省掉「先轮廓后矫正」的几何假设，侧倾/透视场景更稳 |
+| 推理 | **纯 ONNX**（`onnxruntime`），不引入 PyTorch —— 打包体积与启动时间都可控 |
+| 权重 | 仓库不分发，放 `models/yolo/plate_det.onnx` + `plate_rec.onnx` 即自动启用 |
+| 依赖 | 独立 extra：`pip install -e ".[yolo]"`（`onnxruntime>=1.16`） |
+
+本次落地的是**骨架**，已完成的部分：
+
+- `src/lpr/engines/yolo_engine.py`：`BaseEngine` 实现、注册表接入、
+  `is_available()` 双条件探测（onnxruntime **且** 权重文件在），不可用时
+  返回**可行动**的原因（含缺失文件的绝对路径建议位置）；
+- `Detection` 数据类：`corners`(4,2) / `box` / `layout` / `score`，
+  带 `width` / `height` 便捷属性；
+- 权重目录解析：从当前工作目录向上走到项目根，找 `models/yolo/`；
+- `models/yolo/README.md`：权重放置位置、许可义务、CCPD 训练与导出指引；
+- 自动被发现：`lpr engines` 会列出第四个引擎并标注「不可用」，
+  GUI 引擎下拉同样出现（禁用态 + 原因提示）；
+- `tests/test_yolo_engine.py`：17 项用例覆盖注册 / 可用性探测 / 路径解析 /
+  默认参数 / `Detection` 语义 / 未实现路径；
+- `pyproject.toml` 新增 `yolo` extra，README 同步更新引擎表、依赖表、
+  安装说明与项目结构。
+
+**尚未实现**（明确写在 `Known limitations` 里，不做假象）：
+
+- `_detect()`：读 ONNX 输出 → 解码 bbox / 角点 / 分类 → NMS；
+- `_recognize_all()`：按四角点做透视矫正 → 送入识别网络 → 语法纠错。
+
+两者当前都会抛 `NotImplementedError` 并附实现指引，**不会静默返回空结果**。
+
+## 三、验证
+
+- 本机 940 项 pytest 全绿（约 2 分 13 秒）；
+- `ruff check` / `ruff format --check` / `mypy --platform linux` 全过；
+- `lpr engines` 实测输出四个引擎，`yolo` 正确显示为不可用并给出原因；
+- GUI 引擎下拉离屏实测：3 个可选 + 1 个禁用（`enabled = False`）。

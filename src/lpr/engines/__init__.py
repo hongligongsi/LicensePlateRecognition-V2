@@ -19,9 +19,11 @@ from .registry import (
     get_engine,
     register_engine,
 )
+from .yolo_engine import YoloEngine
 
 register_engine(CVEngine)
 register_engine(DeepEngine)
+register_engine(YoloEngine)
 
 __all__ = [
     "INFERENCE_LOCK",
@@ -29,6 +31,7 @@ __all__ = [
     "CVEngine",
     "DeepEngine",
     "EngineUnavailable",
+    "YoloEngine",
     "available_engines",
     "clear_instances",
     "create_engine",

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lpr-v2"
-version = "2.4.3"
+version = "2.4.4"
 description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,6 +44,10 @@ dependencies = [
 #: （同一个 onnxruntime 1.31.0 下，1.2.3 过、1.2.13 不过，判别因子是 rapidocr）。
 deep = ["rapidocr-onnxruntime==1.2.3"]
 deep-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.5"]
+# 检测识别引擎（第三引擎）：车牌专用检测网络 + 识别，对侧倾/模糊车牌定位更鲁棒
+#: 只依赖 onnxruntime —— 刻意不引入 torch，安装体积保持在几十 MB。
+#: 权重（models/yolo/*.onnx）不随包分发，需用户自行下载，见 docs/THIRD_PARTY.md。
+yolo = ["onnxruntime>=1.16"]
 # 图形界面
 #: 界面只 import QtCore / QtGui / QtWidgets，全在 Essentials 里。
 #: 直接依赖元包 PySide6 会连带拉 PySide6-Addons（WebEngine / Charts /
