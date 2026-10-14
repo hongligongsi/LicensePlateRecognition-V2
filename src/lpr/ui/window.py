@@ -466,6 +466,8 @@ class MainWindow(QMainWindow):
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.verticalHeader().setDefaultSectionSize(30)
         self.history_table.setMaximumHeight(220)
+        # 点击历史行 → 把该条结果回显到识别结果区（号码皮肤/颜色徽章/ROI/元信息）
+        self.history_table.cellClicked.connect(self._on_history_row_clicked)
         history_layout.addWidget(self.history_table)
 
         btn_row = QHBoxLayout()
@@ -876,6 +878,8 @@ class MainWindow(QMainWindow):
         self._history.append(res)
         if len(self._history) > self.config.ui.max_history:
             self._history = self._history[-self.config.ui.max_history :]
+            # 列表被截断时表格也要同步删首行，否则行号与 _history 下标错位
+            self.history_table.removeRow(0)
 
         row = self.history_table.rowCount()
         self.history_table.insertRow(row)
@@ -888,6 +892,8 @@ class MainWindow(QMainWindow):
         ]
         for col, value in enumerate(values):
             item = QTableWidgetItem(value)
+            # 把结果对象绑到该行的每个单元格上，点击任意列都能取回
+            item.setData(Qt.UserRole, res)
             if col == 1:
                 font = QFont()
                 font.setBold(True)
@@ -897,6 +903,36 @@ class MainWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignCenter)
             self.history_table.setItem(row, col, item)
         self.history_table.scrollToBottom()
+
+    def _on_history_row_clicked(self, row: int, _col: int) -> None:
+        """点击历史行：把该条识别结果回显到上方结果区。
+
+        只更新展示，不再写历史（否则会自己追加自己）。
+        """
+        item = self.history_table.item(row, 0)
+        if item is None:
+            return
+        res = item.data(Qt.UserRole)
+        if not isinstance(res, PlateResult):
+            return  # 占位行没有数据
+
+        self._apply_plate_skin(res.color.value, res.text)
+        self._apply_badge(res.color.value, label=res.color.label)
+        if res.roi is not None and res.roi.size:
+            self._last_roi_pixmap = _array_to_pixmap(
+                res.roi, self.roi_label.width(), self.roi_label.height()
+            )
+            self.roi_label.setPixmap(self._last_roi_pixmap)
+
+        chars_info = (
+            " ".join(f"{t}:{c:.2f}" for t, c in zip(res.text, res.char_confidences, strict=False))
+            if res.char_confidences
+            else ""
+        )
+        self.meta_label.setText(
+            f"历史记录｜引擎 {res.engine}｜置信度 {res.confidence:.2f}\n"
+            f"bbox={res.bbox}  {chars_info}"
+        )
 
     def on_export_history(self) -> None:
         if not self._history:
