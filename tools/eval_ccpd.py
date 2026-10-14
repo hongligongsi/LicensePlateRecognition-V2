@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """CCPD 真实样张准确率评测（deep 引擎）。
 
 ## 数据来源
@@ -29,6 +28,7 @@ CCPD 每图恰有一块牌，报告三个互补指标：
     python tools/eval_ccpd.py --subset base   # 只评某个子集
     python tools/eval_ccpd.py --limit 20      # 快速冒烟
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,7 +54,7 @@ def _d1(a: str, b: str) -> bool:
     if len(a) > len(b):
         a, b = b, a
     for i in range(len(b)):
-        cand = b[:i] + b[i + 1:]  # b 删一个字符
+        cand = b[:i] + b[i + 1 :]  # b 删一个字符
         if cand == a:
             return True
     return False  # 长度差 ≤1 时替换/增删一次必能化为上述情形的近似
@@ -85,9 +85,9 @@ def main() -> int:
         items = items[: args.limit]
 
     n = n_img_hit = 0
-    n_plate_hit = 0          # 牌级命中（近失不计）
-    n_near = 0               # 近失（差 1 个字符）
-    n_extra = 0              # 误检条目数
+    n_plate_hit = 0  # 牌级命中（近失不计）
+    n_near = 0  # 近失（差 1 个字符）
+    n_extra = 0  # 误检条目数
     by_subset: dict[str, list[str]] = {}
     miss_detail: list[str] = []
     t0 = time.time()
@@ -118,19 +118,19 @@ def main() -> int:
         else:
             sub = meta.get("subset", "?")
             by_subset.setdefault(sub, []).append(name)
-            miss_detail.append(
-                f"{name} [{sub}] GT={'/'.join(gt_list)} 检出={got or '无'}")
+            miss_detail.append(f"{name} [{sub}] GT={'/'.join(gt_list)} 检出={got or '无'}")
 
     # ---- 汇总
     if n == 0:
         print("没有可评测样本")
         return 1
     elapsed = time.time() - t0
-    print(f"\n==== CCPD 评测（{n} 张, {elapsed:.0f}s, "
-          f"{elapsed / n * 1000:.0f} ms/张）====")
+    print(f"\n==== CCPD 评测（{n} 张, {elapsed:.0f}s, {elapsed / n * 1000:.0f} ms/张）====")
     print(f"图级命中（严格）: {n_img_hit}/{n} = {n_img_hit / n:.1%}")
-    print(f"牌级命中: {n_plate_hit}/{n} = {n_plate_hit / n:.1%}"
-          f"   近失(差1字符): {n_near}   误检条目: {n_extra}")
+    print(
+        f"牌级命中: {n_plate_hit}/{n} = {n_plate_hit / n:.1%}"
+        f"   近失(差1字符): {n_near}   误检条目: {n_extra}"
+    )
 
     # 分子集命中率（图级）
     all_by_sub: dict[str, list[str]] = {}

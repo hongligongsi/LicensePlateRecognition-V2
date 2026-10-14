@@ -70,9 +70,9 @@ def test_accuracy_gate(engine):
     """三条门槛：命中 + 底色 + 比率，失败消息里给全部明细便于定位。"""
     from lpr.utils.image import imread
 
-    misses: list[str] = []         # 命中门槛：整块车牌丢失
+    misses: list[str] = []  # 命中门槛：整块车牌丢失
     color_mismatch: list[str] = []  # 颜色门槛：底色判错
-    n_required = 0                 # 分母 = 常规样张数（known_failure 不计）
+    n_required = 0  # 分母 = 常规样张数（known_failure 不计）
     n_hits = 0
 
     for s in _SAMPLES:
@@ -101,9 +101,7 @@ def test_accuracy_gate(engine):
                 want = s["color"]
                 have = by_text[plate].color.value
                 if have != want:
-                    color_mismatch.append(
-                        f"{s['path']}: {plate} 底色判成 {have}，标注为 {want}"
-                    )
+                    color_mismatch.append(f"{s['path']}: {plate} 底色判成 {have}，标注为 {want}")
         else:
             misses.append(f"{s['path']}: 期望 {sorted(expected)}，实得 {sorted(got)}")
 

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import cv2
@@ -81,7 +82,7 @@ def _red_mask(hsv: np.ndarray) -> np.ndarray:
     """生成红色前景掩码（军牌字头/警牌「警」/武警「WJ」的用色）。"""
     m1 = cv2.inRange(hsv, np.array(_RED_LOW[0], np.uint8), np.array(_RED_LOW[1], np.uint8))
     m2 = cv2.inRange(hsv, np.array(_RED_HIGH[0], np.uint8), np.array(_RED_HIGH[1], np.uint8))
-    return m1 | m2
+    return cv2.bitwise_or(m1, m2)
 
 
 def _red_signal(roi: np.ndarray) -> float:
@@ -91,10 +92,10 @@ def _red_signal(roi: np.ndarray) -> float:
     45%，视为散乱反射而非红色字符（真红色字符与车牌等高，
     实测警牌「警」字高占 0.81，尾灯/招牌反射通常 <0.45）。
     """
-    roi = ensure_bgr(roi, min_side=4)
-    if roi is None or roi.size == 0 or roi.ndim == 2:
+    bgr = ensure_bgr(roi, min_side=4)
+    if bgr is None or bgr.size == 0 or bgr.ndim == 2:
         return 0.0
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     mask = _red_mask(hsv)
     total = mask.size
     if total == 0:
@@ -107,7 +108,7 @@ def _red_signal(roi: np.ndarray) -> float:
     if n <= 1:
         return 0.0
     idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    char_h = stats[idx, cv2.CC_STAT_HEIGHT] / roi.shape[0]
+    char_h = stats[idx, cv2.CC_STAT_HEIGHT] / bgr.shape[0]
     if char_h < 0.45:
         return 0.0
     return ratio
@@ -136,17 +137,17 @@ def detect_hazmat(roi: np.ndarray, cfg: LocateConfig) -> bool:
     但同一块牌上白色文字面积与黄色噪声相当甚至更大（white/yellow≈1~3）；
     真危险品牌上黄字是绝对前景，白色像素≈0，两者可稳定区分。
     """
-    roi = ensure_bgr(roi, min_side=4)
-    if not cfg.detect_hazmat or roi is None or roi.size == 0:
+    bgr = ensure_bgr(roi, min_side=4)
+    if not cfg.detect_hazmat or bgr is None or bgr.size == 0:
         return False
 
     # 灰度图丢失了色相信息，无法区分"黑底黄字"与"黑底白字"，直接放弃判定
     # （调用方应在 BGR 图上判定；灰度输入不会被误判为危险品，只会退回黑牌）
-    if roi.ndim == 2:
+    if bgr.ndim == 2:
         return False
 
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    total = roi.shape[0] * roi.shape[1]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    total = bgr.shape[0] * bgr.shape[1]
     if total == 0:
         return False
 
@@ -170,7 +171,7 @@ def _core_region(roi: np.ndarray, trim: float = 0.12) -> np.ndarray:
     裁剪比例不宜过大，否则字符（也占中间）会挤掉底色像素。
     """
     h, w = roi.shape[:2]
-    ty, tx = int(round(h * trim)), int(round(w * trim))
+    ty, tx = round(h * trim), round(w * trim)
     if h - 2 * ty < 8 or w - 2 * tx < 8:
         return roi
     return roi[ty : h - ty, tx : w - tx]
@@ -214,11 +215,11 @@ def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]
        避免在"全是噪声、谁都不像"的区域硬判一个颜色；
     4. 蓝/黄/绿都不像时，才退化为黑白判定。
     """
-    roi = ensure_bgr(roi, min_side=4)
-    if roi is None or roi.size == 0:
+    bgr = ensure_bgr(roi, min_side=4)
+    if bgr is None or bgr.size == 0:
         return PlateColor.UNKNOWN, 0.0
 
-    core = _core_region(roi)
+    core = _core_region(bgr)
     ratios = _color_ratios(core)
     if not ratios:
         return PlateColor.UNKNOWN, 0.0
@@ -230,10 +231,7 @@ def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]
         return PlateColor.HAZMAT, max(best, 0.5)
 
     # ---- 蓝 / 黄 / 绿：相对胜出
-    chroma = {
-        c: ratios.get(c, 0.0)
-        for c in (PlateColor.BLUE, PlateColor.YELLOW, PlateColor.GREEN)
-    }
+    chroma = {c: ratios.get(c, 0.0) for c in (PlateColor.BLUE, PlateColor.YELLOW, PlateColor.GREEN)}
     ranked = sorted(chroma.items(), key=lambda kv: -kv[1])
     best_color, best_ratio = ranked[0]
     runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
@@ -246,7 +244,7 @@ def detect_color(roi: np.ndarray, cfg: LocateConfig) -> tuple[PlateColor, float]
         else (PlateColor.BLACK, black_ratio)
     )
 
-    min_share = cfg.color_ratio * 0.25          # 自适应下限（原为 0.5，过严）
+    min_share = cfg.color_ratio * 0.25  # 自适应下限（原为 0.5，过严）
 
     # 领先者必须"够多"且"领先够明显"
     if best_ratio >= min_share and (best_ratio - runner_up) >= cfg.color_margin:
@@ -336,11 +334,11 @@ def _warp_plate(img: np.ndarray, quad: np.ndarray, bbox: tuple[int, int, int, in
     tl, tr, br, bl = src
 
     # 目标宽度取上下边的最大值，高度取左右边的最大值
-    width = int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))))
-    height = int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))))
+    width = round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl)))
+    height = round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr)))
     width, height = max(width, 1), max(height, 1)
 
-    dst = np.float32([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]])
+    dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], np.float32)
     matrix = cv2.getPerspectiveTransform(src, dst)
     return cv2.warpPerspective(
         img,
@@ -456,7 +454,7 @@ def _extend_vertical_by_color(
     ny, nh = (y - up, h + up) if up >= down else (y, h + down)
     if nh >= w:  # 扩成竖条必然扩错（车牌恒为横条）
         return cand
-    quad = np.float32([[x, ny], [x + w, ny], [x + w, ny + nh], [x, ny + nh]])
+    quad = np.array([[x, ny], [x + w, ny], [x + w, ny + nh], [x, ny + nh]], np.float32)
     _crop, bbox = _crop_with_bbox(img, quad, cfg.box_padding)
     if _crop.size == 0:
         return cand
@@ -545,7 +543,7 @@ def _extend_horizontal_by_color(
     nx, nw = (x - left, w + left) if left >= right else (x, w + right)
     if nw > cfg.max_aspect * h:  # 扩得过长必然扩错（车牌长宽比有上限）
         return cand
-    quad = np.float32([[nx, y], [nx + nw, y], [nx + nw, y + h], [nx, y + h]])
+    quad = np.array([[nx, y], [nx + nw, y], [nx + nw, y + h], [nx, y + h]], np.float32)
     _crop, bbox = _crop_with_bbox(img, quad, cfg.box_padding)
     if _crop.size == 0:
         return cand
@@ -557,7 +555,7 @@ def _extend_horizontal_by_color(
 def locate_plates(
     img: np.ndarray,
     cfg: LocateConfig,
-    logger: object | None = None,
+    logger: logging.Logger | None = None,
 ) -> tuple[list[PlateCandidate], float]:
     """定位图中所有可能是车牌的矩形区域。
 
@@ -719,9 +717,7 @@ def locate_plates(
             aspect = w / h
             if not cfg.double_min_aspect < aspect < cfg.max_aspect:
                 continue
-            quad = np.array(
-                [(x, y), (x + w, y), (x + w, y + h), (x, y + h)], np.float32
-            ) / scale
+            quad = np.array([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], np.float32) / scale
             crop, bbox = _crop_with_bbox(img, quad, cfg.box_padding)
             if crop.size == 0:
                 continue
@@ -766,9 +762,7 @@ def locate_plates(
     )
 
 
-def refine_by_color(
-    roi: np.ndarray, color: PlateColor, cfg: LocateConfig
-) -> np.ndarray:
+def refine_by_color(roi: np.ndarray, color: PlateColor, cfg: LocateConfig) -> np.ndarray:
     """用颜色掩码的投影把车牌上下左右的非车牌边界切掉。
 
     原版 ``accurate_place`` 的做法是对的，但同样用了逐像素循环。
@@ -819,9 +813,9 @@ def refine_by_color(
 
 __all__ = [
     "PlateCandidate",
-    "locate_plates",
+    "_order_quad",
     "detect_color",
     "detect_hazmat",
+    "locate_plates",
     "refine_by_color",
-    "_order_quad",
 ]

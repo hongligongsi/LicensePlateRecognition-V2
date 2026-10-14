@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """低置信交叉验证（第二识别模型）的测试。
 
 交叉验证的设计约束：
@@ -6,6 +5,7 @@
 * 只在主模型对某候选**完全无产出**时激活，已命中路径零回归风险；
 * 第二模型读数按 ``secondary_vote_weight`` 折扣计票。
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -48,7 +48,6 @@ class TestSecondaryLoading:
         assert eng._recognizer2 is None
 
     def test_real_model_loads_when_present(self):
-        from pathlib import Path
 
         from lpr.config import PROJECT_ROOT
 
@@ -73,9 +72,7 @@ class TestSecondaryRescue:
         monkeypatch.setattr(eng, "_recognize_only_detailed", lambda img: [])
         # 第二模型读出一个合法车牌
         eng._recognizer2 = object()  # 仅需非 None 哨兵
-        monkeypatch.setattr(
-            eng, "_recognize2_detailed", lambda img: [("京A12345", 0.9, [0.9] * 7)]
-        )
+        monkeypatch.setattr(eng, "_recognize2_detailed", lambda img: [("京A12345", 0.9, [0.9] * 7)])
 
         results = eng._recognize_candidates([(self._roi(), PlateColor.BLUE, (0, 0, 220, 60))])
 

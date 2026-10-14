@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """对抗性退化样张：对现有真值样张施加确定性退化，模拟真实困难场景。
 
 退化类型（全部确定性实现，noise 用固定种子，跨运行结果一致）：
@@ -15,6 +14,7 @@
 * 命令行 ``python tools/make_hard_samples.py`` 把退化图落盘到
   ``tests/baselines/hard/`` 供人工检视/调参（该目录已 gitignore）。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,21 +33,21 @@ OUT_DIR = ROOT / "tests" / "baselines" / "hard"
 
 #: 退化参数（保守取值：模拟真实困难场景，但不应把牌面毁到物理不可读）
 DEGRADATIONS: dict[str, dict] = {
-    "blur": dict(kernel=5),            # 轻度运动模糊
-    "downscale": dict(scale=0.45),     # 车牌像素缩到约原来一半
-    "brighten": dict(gamma=1.6),       # 提亮（逆光过曝）
-    "darken": dict(gamma=0.55),        # 压暗（夜间/阴影）
-    "noise": dict(sigma=18),           # 高斯噪声
-    "tilt": dict(angle=6.0),           # 小角度倾斜
-    "compress": dict(quality=18),      # 重度 JPEG 压缩
+    "blur": {"kernel": 5},  # 轻度运动模糊
+    "downscale": {"scale": 0.45},  # 车牌像素缩到约原来一半
+    "brighten": {"gamma": 1.6},  # 提亮（逆光过曝）
+    "darken": {"gamma": 0.55},  # 压暗（夜间/阴影）
+    "noise": {"sigma": 18},  # 高斯噪声
+    "tilt": {"angle": 6.0},  # 小角度倾斜
+    "compress": {"quality": 18},  # 重度 JPEG 压缩
 }
 
 #: 已知信息不足的 (样本, 退化) 组合：不计入命中率分母。
 #: double_lv 原图已是分辨率极限（见 ground_truth.json 标注），任何退化都不可读；
 #: 领馆红字在重度压缩下色彩信息丢失。
-_ALLOW_MISS_ON = {
-    ("double_lv.png", kind) for kind in DEGRADATIONS
-} | {("shi_lin_guan.jpg", "compress")}
+_ALLOW_MISS_ON = {("double_lv.png", kind) for kind in DEGRADATIONS} | {
+    ("shi_lin_guan.jpg", "compress")
+}
 
 
 def apply_degradation(img: np.ndarray, kind: str, params: dict, seed: int) -> np.ndarray:
@@ -58,7 +58,9 @@ def apply_degradation(img: np.ndarray, kind: str, params: dict, seed: int) -> np
     if kind == "downscale":
         h, w = img.shape[:2]
         s = params["scale"]
-        small = cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s))), interpolation=cv2.INTER_AREA)
+        small = cv2.resize(
+            img, (max(1, int(w * s)), max(1, int(h * s))), interpolation=cv2.INTER_AREA
+        )
         return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
     if kind in ("brighten", "darken"):
         lut = np.array([((i / 255.0) ** params["gamma"]) * 255 for i in range(256)], np.uint8)

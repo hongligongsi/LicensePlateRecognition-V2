@@ -44,6 +44,7 @@ import difflib
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -475,10 +476,7 @@ def _find_bands(profile: np.ndarray, h: int, width: int) -> list[tuple[int, int]
     # 投影顶部/底部各形成一条几像素高的薄带），不是字符行。不滤掉的话
     # 双行牌会被数出 3 段行带（框线+两行字），永远拆不开。
     n = len(profile)
-    result = [
-        b for b in result
-        if not ((b[1] - b[0]) < 0.10 * h and (b[0] == 0 or b[1] == n))
-    ]
+    result = [b for b in result if not ((b[1] - b[0]) < 0.10 * h and (b[0] == 0 or b[1] == n))]
     return result
 
 
@@ -499,16 +497,16 @@ def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     Returns:
         ``(上行, 下行)`` 图块，或 ``None``（不是双层牌）。
     """
-    roi = ensure_bgr(roi, min_side=12)
-    if roi is None:
+    bgr = ensure_bgr(roi, min_side=12)
+    if bgr is None:
         return None
-    h, w = roi.shape[:2]
+    h, w = bgr.shape[:2]
 
     # 宽高比过大 → 不可能是双行牌（双行牌高度约为宽度的一半）
     if w / max(1, h) > _DOUBLE_MAX_ASPECT:
         return None
 
-    profile = _band_profile(roi)
+    profile = _band_profile(bgr)
     bands = _find_bands(profile, h, w)
     if len(bands) != 2:
         return None
@@ -524,8 +522,8 @@ def split_double_line(roi: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     if ratio < _BAND_HEIGHT_SIMILARITY:
         return None
 
-    top = roi[bands[0][0] : bands[0][1], :]
-    bottom = roi[bands[1][0] : bands[1][1], :]
+    top = bgr[bands[0][0] : bands[0][1], :]
+    bottom = bgr[bands[1][0] : bands[1][1], :]
     if top.size == 0 or bottom.size == 0:
         return None
     return top, bottom
@@ -544,22 +542,22 @@ def measure_layout(roi: np.ndarray, cfg: EngineConfig | None = None) -> str:
     if roi is None or roi.size == 0:
         return "unknown"
 
-    roi = ensure_bgr(roi, min_side=8)
-    if roi is None:
+    bgr = ensure_bgr(roi, min_side=8)
+    if bgr is None:
         return "unknown"
 
-    h, w = roi.shape[:2]
+    h, w = bgr.shape[:2]
     if h < 8 or w < 8:
         return "unknown"
 
     # ---- 证据 1（主导）：行分割
     # 它能直接切出两条高度相近、上下分离的行带 —— 这是双行牌最硬的证据。
-    if split_double_line(roi) is not None:
+    if split_double_line(bgr) is not None:
         return "double"
 
     # 行分割"明确否定"：出现了内容过高（超过 50%）的单条行带。
     # 那事实上就是一行字符，比宽高比先验可靠得多，直接判单行。
-    if _has_single_band(roi):
+    if _has_single_band(bgr):
         return "single"
 
     # ---- 证据 2（辅助）：宽高比先验
@@ -580,11 +578,11 @@ def _has_single_band(roi: np.ndarray) -> bool:
     但"空列表"也可能是因为完全找不到行带（噪声图）。
     这里显式区分两者：只有**先找到行带、又因过高被拒**才算明确否定。
     """
-    roi = ensure_bgr(roi, min_side=12)
-    if roi is None:
+    bgr = ensure_bgr(roi, min_side=12)
+    if bgr is None:
         return False
-    h, w = roi.shape[:2]
-    profile = _band_profile(roi)
+    h, w = bgr.shape[:2]
+    profile = _band_profile(bgr)
     if profile.size == 0 or profile.max() <= 0:
         return False
 
@@ -652,7 +650,7 @@ class DeepEngine(BaseEngine):
         self.cfg = self.config.locate
         self.backend = backend
         self._models_dir = models_dir
-        self._ocr = None
+        self._ocr: Any = None
         self._recognizer = None
         #: 第二识别器（低置信交叉验证），仅 rapidocr 后端 + 配置启用时加载
         self._recognizer2 = None
@@ -1141,7 +1139,9 @@ class DeepEngine(BaseEngine):
             # 采纳（防止把领馆牌错补成警牌——两者补后都合法，同分的不动）。
             if corrected and corrected[-1].isascii() and len(corrected) in (5, 6, 7):
                 red_tail = self._read_red_tail(roi) or self._infer_red_tail(roi)
-                if red_tail is not None and plate_score(corrected + red_tail[0]) > plate_score(corrected):
+                if red_tail is not None and plate_score(corrected + red_tail[0]) > plate_score(
+                    corrected
+                ):
                     changes.append(f"红色尾字定向识别补回 {red_tail[0]!r}")
                     logger.debug("红字定向识别: %s → %s", corrected, corrected + red_tail[0])
                     corrected += red_tail[0]

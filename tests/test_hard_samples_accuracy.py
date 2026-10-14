@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """对抗性退化样张的准确率门槛（CI gate）。
 
 与 tests/test_real_samples_accuracy.py 的分工：
@@ -16,6 +15,7 @@
 红尾字退化翻转、琼→京/豫、double_yellow 退化后 OCR 读错）修复后
 应相应上调本阈值。
 """
+
 from __future__ import annotations
 
 import sys
