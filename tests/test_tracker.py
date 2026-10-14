@@ -132,9 +132,9 @@ def test_two_plates_tracked_independently() -> None:
 
 def test_expired_track_is_dropped() -> None:
     tracker = MultiPlateTracker(max_age=0.0)
-    tracker.update([_res("京A12345")])
-    # max_age=0 意味着下一帧就过期（时间必然推进）
-    tracker.update([])
+    tracker.update([_res("京A12345")], _now=1.0)
+    # max_age=0 时只要时间严格推进就立即过期
+    tracker.update([], _now=2.0)
     assert tracker.stats["active_tracks"] == 0
 
 

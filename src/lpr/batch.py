@@ -55,7 +55,10 @@ def _cpu_budget() -> int:
     ``sched_getaffinity``，它反映的是真正的调度掩码。
     """
     try:
-        return max(1, len(os.sched_getaffinity(0)))  # type: ignore[attr-defined]
+        # Windows 上 os 没有 sched_getaffinity（attr-defined 报错，需 ignore）；
+        # Linux 上有（该 ignore 变成"未使用"，被 warn_unused_ignores 报错）。
+        # 同时列出 unused-ignore 兼容两平台：只会屏蔽自己这一行的"未使用"告警。
+        return max(1, len(os.sched_getaffinity(0)))  # type: ignore[attr-defined, unused-ignore]
     except (AttributeError, OSError):
         return max(1, os.cpu_count() or 1)
 

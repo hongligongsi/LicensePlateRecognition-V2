@@ -33,7 +33,12 @@ dependencies = [
 
 [project.optional-dependencies]
 # 深度学习引擎（推荐，精度显著高于传统 CV）
-deep = ["rapidocr-onnxruntime>=1.2"]
+#: rapidocr-onnxruntime 的 1.2.x 暴露 ``text_recognizer`` 与
+#: ``get_boxes_img_without_det``（deep_engine 靠它跳过检测网络做"纯识别"提速，
+#: 单图 8~55ms）；1.4.x 改成 ``text_rec`` 且移除了该 helper，快路径被判为不可用，
+#: 每张图退化成全图检测（单图 0.3~1s+），对抗样张门槛测试因此在 CI 上超时。
+#: 故上界锁在 1.2.x，保证行为与实测一致。
+deep = ["rapidocr-onnxruntime>=1.2,<1.3"]
 deep-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.5"]
 # 图形界面
 #: 界面只 import QtCore / QtGui / QtWidgets，全在 Essentials 里。

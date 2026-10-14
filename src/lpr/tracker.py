@@ -176,9 +176,13 @@ class MultiPlateTracker:
 
     # ------------------------------------------------------------------ 主循环
 
-    def update(self, results: list[PlateResult]) -> list[PlateResult]:
-        """送入一帧的识别结果，返回**新确认**的车牌列表。"""
-        now = time.time()
+    def update(self, results: list[PlateResult], *, _now: float | None = None) -> list[PlateResult]:
+        """送入一帧的识别结果，返回**新确认**的车牌列表。
+
+        Args:
+            _now: 内部参数，仅供测试注入确定性的时间戳。正常调用不填。
+        """
+        now = _now if _now is not None else time.time()
         results = merge_same_image(results)
 
         matched_tracks: set[int] = set()

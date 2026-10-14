@@ -40,6 +40,28 @@ def _load_launcher():
 LAUNCHER = _load_launcher()
 
 
+def _project_version() -> str:
+    """取 ``pyproject.toml`` 里 ``[project]`` 段的 ``version``。
+
+    刻意**不用** ``tomllib``：它是 3.11 才进标准库的，而 CI 的测试矩阵覆盖
+    3.10（v2.4.3 的教训：3.10 上直接 ``ModuleNotFoundError``），为一句断言
+    引入 ``tomli`` 回退依赖不划算。这里只按行切出 ``[project]`` 段取值，
+    粒度足够且不依赖 TOML 解析器。
+    """
+    lines = (ROOT / "pyproject.toml").read_text(encoding="utf-8").splitlines()
+    try:
+        start = lines.index("[project]")
+    except ValueError:  # pragma: no cover - 正常仓库必含该段
+        raise AssertionError("pyproject.toml 缺少 [project] 段") from None
+    for line in lines[start + 1 :]:
+        if line.startswith("["):  # 下一个段头，[project] 段结束
+            break
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "version":
+            return value.split("#", 1)[0].strip().strip('"')
+    raise AssertionError("pyproject.toml 的 [project] 段缺少 version")
+
+
 def _run(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess[str]:
     """在子进程里以 ``python -m lpr`` 方式运行（验证真实入口，而非直接调函数）。"""
     env = dict(os.environ)
@@ -206,14 +228,11 @@ class TestPythonLauncher:
         v2.3.9 之前 cli.py 自己写一份、``lpr.__version__`` 又停在 2.3.1，
         状态栏、命令行 --version、pyproject 三处各说各话——用值比较钉死。
         """
-        import tomllib
-
         import lpr
 
-        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         pkg_version = lpr.__version__
         assert pkg_version == LAUNCHER.VERSION
-        assert pyproject["project"]["version"] == pkg_version
+        assert _project_version() == pkg_version
 
         from lpr import cli
 
@@ -280,12 +299,13 @@ class TestPythonLauncher:
     def test_install_spec_and_fallbacks_match_pyproject(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         assert 'gui = ["PySide6-Essentials>=6.5"]' in pyproject
-        assert 'deep = ["rapidocr-onnxruntime>=1.2"]' in pyproject
+        # 检查 deep 行包含 rapidocr 约束（带上界 1.3，避免 1.4.x 丢失快路径）
+        assert "rapidocr-onnxruntime>=1.2" in pyproject
         assert LAUNCHER.INSTALL_SPEC == ".[deep,gui]"
         joined = " ".join(LAUNCHER.FALLBACK_PACKAGES)
         for pin in (
             "PySide6-Essentials>=6.5",
-            "rapidocr-onnxruntime>=1.2",
+            "rapidocr-onnxruntime>=1.2,<1.3",
             "numpy>=1.24",
             "Pillow>=10.0",
         ):

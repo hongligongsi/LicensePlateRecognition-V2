@@ -34,6 +34,24 @@ pytestmark = pytest.mark.slow
 _THRESHOLD = 0.45
 
 
+def _degradation_kinds() -> tuple[str, ...]:
+    """从退化模块取全部退化类型键，避免两处硬编码漂移。"""
+    from tools.make_hard_samples import DEGRADATIONS
+
+    return tuple(sorted(DEGRADATIONS))
+
+
+_KINDS = _degradation_kinds()
+
+#: 各退化类型的命中统计：kind → (命中数, 计分数, 未命中明细)。
+#: 之所以拆成"按类型分测 + 末尾汇总断言"：单测一次跑完 77 张退化图时，多数
+#: 样本走最慢的全图 OCR 兜底（单张 0.3~1s），在较慢的 Python/机器上会超过
+#: ``pytest --timeout=300`` 的单测上限而被判失败（实测 3.12 下超时、3.13 下
+#: 约 99s 侥幸通过）。拆开后每个测试只跑约 11 张，稳定低于上限；汇总断言仍
+#: 保留"总命中率"这一语义，且分类型明细便于定位是哪类退化在回退。
+_STATS: dict[str, tuple[int, int, list[str]]] = {}
+
+
 @pytest.fixture(scope="module")
 def engine():
     from lpr.config import EngineConfig
@@ -44,14 +62,23 @@ def engine():
     return eng
 
 
-def test_hard_samples_gate(engine):
+def _iter_kind(kind: str):
+    """只产出某一退化类型的 (条目, 退化图)；退化计算便宜，重的是 engine.predict。"""
     from tools.make_hard_samples import iter_hard_samples
 
+    for entry, img in iter_hard_samples():
+        if entry["path"].endswith(f"__{kind}"):
+            yield entry, img
+
+
+@pytest.mark.parametrize("kind", _KINDS)
+def test_hard_samples_by_kind(engine, kind):
+    """单一退化类型下的命中情况；此处只统计，阈值统一在汇总测试里卡。"""
     n_required = 0
     n_hits = 0
     misses: list[str] = []
 
-    for entry, img in iter_hard_samples():
+    for entry, img in _iter_kind(kind):
         results = engine.predict(img)
         got = {r.text for r in results if r.text}
         expected = set(entry["plates"])
@@ -65,8 +92,23 @@ def test_hard_samples_gate(engine):
         else:
             misses.append(f"{entry['path']}: 期望 {sorted(expected)}，实得 {sorted(got)}")
 
+    _STATS[kind] = (n_hits, n_required, misses)
+
+
+def test_hard_samples_gate():
+    """汇总各退化类型的命中率并卡门槛（依赖上面的分类型测试先行执行）。"""
+    assert set(_STATS) == set(_KINDS), "分类型测试未全部执行，无法汇总命中率"
+
+    n_hits = sum(hits for hits, _, _ in _STATS.values())
+    n_required = sum(required for _, required, _ in _STATS.values())
+    misses = [m for _, _, ms in _STATS.values() for m in ms]
+
     rate = n_hits / n_required if n_required else 1.0
-    detail = f"\n对抗命中率 {n_hits}/{n_required} = {rate:.1%}（门槛 {_THRESHOLD:.0%}）"
+    per_kind = "，".join(f"{k} {h}/{r}" for k, (h, r, _) in sorted(_STATS.items()))
+    detail = (
+        f"\n对抗命中率 {n_hits}/{n_required} = {rate:.1%}（门槛 {_THRESHOLD:.0%}）\n"
+        f"分类型：{per_kind}"
+    )
     if misses:
         detail += "\n未命中:\n  " + "\n  ".join(misses)
 

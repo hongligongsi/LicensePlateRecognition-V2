@@ -51,7 +51,7 @@ FALLBACK_PACKAGES = (
     "numpy>=1.24",
     "opencv-python-headless>=4.10,<5",
     "Pillow>=10.0",
-    "rapidocr-onnxruntime>=1.2",
+    "rapidocr-onnxruntime>=1.2,<1.3",
     "PySide6-Essentials>=6.5",
 )
 
