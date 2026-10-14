@@ -37,8 +37,11 @@ dependencies = [
 #: ``get_boxes_img_without_det``（deep_engine 靠它跳过检测网络做"纯识别"提速，
 #: 单图 8~55ms）；1.4.x 改成 ``text_rec`` 且移除了该 helper，快路径被判为不可用，
 #: 每张图退化成全图检测（单图 0.3~1s+），对抗样张门槛测试因此在 CI 上超时。
-#: 故上界锁在 1.2.x，保证行为与实测一致。
-deep = ["rapidocr-onnxruntime>=1.2,<1.3"]
+#: 版本还必须**钉死**在 1.2.3：随包分发的模型在 1.2.13 上有漂移，
+#: ``img/single_blue.jpg`` 的 V 被读成 9，真实样张门槛因此掉到 90%（=门槛）
+#: 而在 linux/py3.10、py3.11 上红。1.2.3 是本仓库离线实测通过的那一版
+#: （同一个 onnxruntime 1.31.0 下，1.2.3 过、1.2.13 不过，判别因子是 rapidocr）。
+deep = ["rapidocr-onnxruntime==1.2.3"]
 deep-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.5"]
 # 图形界面
 #: 界面只 import QtCore / QtGui / QtWidgets，全在 Essentials 里。

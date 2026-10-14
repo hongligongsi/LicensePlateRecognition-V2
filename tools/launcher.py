@@ -51,7 +51,7 @@ FALLBACK_PACKAGES = (
     "numpy>=1.24",
     "opencv-python-headless>=4.10,<5",
     "Pillow>=10.0",
-    "rapidocr-onnxruntime>=1.2,<1.3",
+    "rapidocr-onnxruntime==1.2.3",
     "PySide6-Essentials>=6.5",
 )
 
@@ -180,8 +180,32 @@ def launch(target: Sequence[str], args: Sequence[str], root: Path = ROOT) -> int
 # ────────────────────────────────────────────────────────────────
 # 主流程
 # ────────────────────────────────────────────────────────────────
+def _make_pipes_utf8() -> None:
+    """把**管道 / 重定向**的 stdout、stderr 拨到 UTF-8。
+
+    控制台（``isatty()``）保持原编码 —— 中文 Windows 控制台是 cp936，本来就
+    显示得出来。但管道/重定向下的编码由 locale 决定：CI 的 Windows runner 是
+    cp1252，这里 ``print`` 一行中文就抛 ``UnicodeEncodeError``，启动器直接以
+    非零码退出（v2.4.3 的 CI 教训）。``start.bat`` 自己不能碰编码 ——
+    它必须保持纯 ASCII。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream.isatty():
+                continue
+        except (AttributeError, ValueError):
+            continue
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding == "utf8":
+            continue
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+
+    _make_pipes_utf8()
 
     #: 重定向（``start.bat > out.txt``）时 stdout 会变成块缓冲，本模块的提示
     #: 会整段压在子进程输出之后。改成行缓冲，顺序在控制台和管道下才一致。

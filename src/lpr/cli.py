@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -376,7 +377,31 @@ def cmd_config(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def _make_pipes_utf8() -> None:
+    """把**管道 / 重定向**的 stdout、stderr 拨到 UTF-8。
+
+    控制台（``isatty()``）不动：中文 Windows 控制台是 cp936，保留原编码
+    就能正常显示中文，硬改成 UTF-8 反而会花屏。但输出一旦走管道或重定向，
+    编码就取决于 locale —— CI 的 Windows runner 是 cp1252，一句中文提示
+    就让 ``print`` 抛 ``UnicodeEncodeError`` 把进程打死（v2.4.3 的 CI 教训：
+    ``python -m lpr engines`` 与 ``start.bat`` 两条路径都红在这里）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream.isatty():  # 被替换成不支持 isatty 的对象时走 except
+                continue
+        except (AttributeError, ValueError):
+            continue
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding == "utf8":
+            continue
+        # 3.7 以前、或流被换成不支持 reconfigure 的对象（例如被测试捕获）
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_pipes_utf8()
     parser = _make_parser()
     args = parser.parse_args(argv)
 

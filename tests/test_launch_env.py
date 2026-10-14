@@ -299,13 +299,13 @@ class TestPythonLauncher:
     def test_install_spec_and_fallbacks_match_pyproject(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         assert 'gui = ["PySide6-Essentials>=6.5"]' in pyproject
-        # 检查 deep 行包含 rapidocr 约束（带上界 1.3，避免 1.4.x 丢失快路径）
-        assert "rapidocr-onnxruntime>=1.2" in pyproject
+        # deep 行必须钉死 rapidocr 版本：1.2.13 的随包模型会把样张的 V 读成 9
+        assert "rapidocr-onnxruntime==1.2.3" in pyproject
         assert LAUNCHER.INSTALL_SPEC == ".[deep,gui]"
         joined = " ".join(LAUNCHER.FALLBACK_PACKAGES)
         for pin in (
             "PySide6-Essentials>=6.5",
-            "rapidocr-onnxruntime>=1.2,<1.3",
+            "rapidocr-onnxruntime==1.2.3",
             "numpy>=1.24",
             "Pillow>=10.0",
         ):
