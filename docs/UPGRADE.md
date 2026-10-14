@@ -1508,3 +1508,86 @@ v2.3.9 的 QSS 给 `QComboBox QAbstractItemView` 设了**白底**，却没给条
 
 offscreen 展开 showPopup() 截图核对：两个条目（传统 CV / 深度学习）
 均清晰可见，选中项浅蓝高亮。
+
+---
+
+# v2.4.2 —— 分叉收口：合并后的静态检查补齐
+
+`main` 与 `ci-fixes` 分叉过一段时间，合并时对 3 个冲突文件保留了 `main`
+版本，于是 v2.3.6~v2.4.2 期间新引入的代码没经过静态检查。本次补齐：
+
+- `ensure_bgr` 返回 Optional 的变量重绑定改为新变量名（`bgr`），
+  避免 mypy 认定「可能为 None」；
+- `np.float32(list)` 改为 `np.array(..., np.float32)`（mypy `arg-type`）；
+- `m1 | m2` 改为 `cv2.bitwise_or`（mypy 不支持 ndarray 的 `|` 运算类型）；
+- `locate_plates` 的 `logger` 参数标注为 `logging.Logger | None`；
+- `DeepEngine._ocr` 标注为 `Any`（Optional 不可直接调用）；
+- ruff format 统一 7 个文件。
+
+无功能变更。ruff check / format / mypy 全量通过，fast 测试 813 项通过。
+
+---
+
+# v2.4.3 —— 历史行回显、版本号对齐，以及 CI 从 5 红到全绿
+
+## 一、点识别历史行回显该条结果（GUI）
+
+此前历史表只读：点中一行后上方结果区仍停在最后一次识别，看起来「历史与
+结果不同步」。现在 `cellClicked` 取回行内绑定的 `PlateResult`，回显号码
+皮肤、颜色徽章、ROI 与元信息（只更新展示，不再追加历史）。
+
+顺带修掉一个隐患：`_history` 超过 `max_history` 截断时表格行未同步删除，
+行号会与 `_history` 下标错位；现在截断时同步 `removeRow(0)`，且结果对象
+改为直接绑在单元格 `UserRole` 上，不再依赖行号对齐。
+
+## 二、版本号对齐
+
+`v2.4.2` 被提交序列跳过（收口提交是 `style(ci)`，无版本语义），版本号直接
+从 2.4.1 对齐到 2.4.3。此前提交标题已写 v2.4.3，但三处版本字面量
+（`src/lpr/__init__.py`、`tools/launcher.py`、`pyproject.toml`）仍停在
+2.4.1，导致 tag 无法诚实落地。补打 v2.3.1 / v2.3.9 / v2.4.0 / v2.4.1 /
+v2.4.3 五个标签，逐一校验标签名与代码内版本号一致。
+
+## 三、CI：三处根因，两轮修复
+
+`main` 上 6 项检查一度挂了 5 项（另有一条 Windows 3.12 随后暴露），
+根因是三类：
+
+**1) Python 3.10 没有 `tomllib`** —— 它是 3.11 才进标准库的，而测试矩阵
+覆盖 3.10。版本断言改为按 `[project]` 段解析 `pyproject.toml`，不引入
+TOML 解析器，也就无需 `tomli` 回退依赖。
+
+**2) mypy 报「未使用的 `type: ignore`」（Linux）** ——
+`os.sched_getaffinity` 在 Linux 上存在，`# type: ignore[attr-defined]` 被
+判为多余（在 Windows 开发机上恰好看不到）。ignore 代码列表补上
+`unused-ignore`，两平台都成立；已用 `mypy --platform linux` 对照验证。
+
+**3) 依赖版本漂移让准确率门槛变成抽奖** —— 两个层面：
+
+- `rapidocr-onnxruntime` **1.4.x** 移除了 `text_recognizer` /
+  `get_boxes_img_without_det`，`deep` 引擎的「纯识别」快路径失效，每张图
+  退化成全图检测（0.3~1s+），对抗样张门槛测试在 CI 上超时；先把上界收到
+  `<1.3`，并把 77 张对抗样张的单测按退化类型拆开，避免撞 300s 单测上限。
+- 收到 `<1.3` 后仍有 Python 3.10 / 3.11 判红：`img/single_blue.jpg` 的
+  `V` 被读成 `9`。证据是**同一个 onnxruntime 1.31.0** 下，3.12 / 3.13
+  装到的 **1.2.3** 读对，3.10 / 3.11 装到的 **1.2.13** 读错，判别因子就是
+  rapidocr 自带模型的漂移。最终把 `deep` 依赖**钉死**为 `==1.2.3`
+  （`tools/launcher.py` 兜底清单同步）。
+
+**4) Windows 管道下的中文崩溃** —— CI 的 Windows runner 在 stdout 走管道
+时编码是 cp1252，`cli.py` 与 `tools/launcher.py` 里 `print` 中文直接抛
+`UnicodeEncodeError`，进程以 1 退出（`python -m lpr engines` 与
+`start.bat` 两条路径都中）。两个模块各加一道 `_make_pipes_utf8()`：
+stdout / stderr 不是控制台（管道或重定向）且当前编码不是 UTF-8 时改为
+UTF-8；**控制台本身不动** —— 中文 Windows 控制台是 cp936，保留原编码
+才不会花屏。本机用 `PYTHONIOENCODING=cp1252` 复现了原报错，修复后两条
+路径退出码均为 0。
+
+## 验证
+
+本地 906 项测试全绿（约 2 分钟），ruff check / `ruff format --check` /
+`mypy --platform linux` 全过。CI 上 6 项检查（3.10 / 3.11 / 3.12 / 3.13 /
+Windows 3.12 / 静态检查）全部 success。
+
+> 说明：GitHub 上历史提交旁边仍是红叉，那是**它被推上去那一刻**的快照，
+> 不会随修复自动重跑；仓库健康状态只看最新提交。
