@@ -8,7 +8,7 @@ version = "2.4.3"
 description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-only" }
 authors = [{ name = "License-Plate-Recognition contributors" }]
 keywords = ["license-plate", "ocr", "opencv", "车牌识别", "lpr"]
 classifiers = [
@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Typing :: Typed",
 ]

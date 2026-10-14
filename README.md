@@ -506,4 +506,21 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 
 ## 许可
 
-MIT（与原项目一致）
+**GNU GPL-3.0**（`GPL-3.0-only`），全文见 [LICENSE](LICENSE)。
+
+原项目 [hongligongsi/License-Plate-Recognition](https://github.com/hongligongsi/License-Plate-Recognition)
+由 wzh191920 于 2021 年以 **MIT** 许可发布。MIT 允许再许可，因此本项目可整体升级为
+GPL-3.0；但依据 MIT 的保留条款，**原作者的版权与许可声明必须随源保留** —— 该声明完整
+列在 [LICENSE](LICENSE) 文件末尾，并另存一份于
+[LICENSE.MIT.original](LICENSE.MIT.original)。
+
+由此带来的实际影响：
+
+- 你可以自由使用、修改、再分发，但**再分发时必须提供完整源码**并以 GPL-3.0 授权；
+- 若你将本项目（或其修改版）作为**网络服务**提供给他人，需注意 GPL-3.0 的源码提供义务
+  适用于你分发的软件副本；
+- 本项目引用的第三方组件各有其许可（如 RapidOCR 为 Apache-2.0、ONNXRuntime 为 MIT、
+  PySide6 为 LGPL-3.0），清单见 [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md)。
+
+> 说明：`v2.4.3` 及更早版本以 MIT 发布，其许可状态不受本次变更影响 —— 已获取的
+> 旧版本仍可按 MIT 条款使用。
