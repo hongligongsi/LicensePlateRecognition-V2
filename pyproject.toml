@@ -24,6 +24,10 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "opencv-python-headless>=4.10,<5",
+    # rapidocr 声明的是无上限的 opencv_python>=4.5.1，会拉入 cv2 5.x；
+    # 5.x 移除了 ml.SVM_load（传统引擎加载 svm.dat 必需），且与 headless
+    # 同装时后安装者抢占 cv2 命名空间。这里显式给常规包也加上限双保险。
+    "opencv-python>=4.5.1,<5",
     "Pillow>=10.0",
 ]
 

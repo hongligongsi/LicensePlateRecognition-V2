@@ -58,10 +58,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: 安装依赖（含 GUI，测试里有 Qt 用例）
+      - name: 安装依赖（含 GUI 与 deep 引擎，测试里有 Qt 用例和真实样张准确率门槛）
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,gui]"
+          pip install -e ".[dev,gui,deep]"
 
       - name: 运行测试
         env:
@@ -69,10 +69,12 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: pytest tests/ --timeout=300 -ra
 
-  # 说明：定位回归基线（tests/test_regression_baseline.py）已包含在上面的
-  # pytest 里，不需要单独 job —— 它用的是仓库内自带的真实样张（img/ + samples/），
-  # 确定性 cv 引擎，不依赖任何需要下载的数据集或 OCR 模型。
+  # 说明：定位回归基线（tests/test_regression_baseline.py，cv 引擎行为快照）
+  # 与真实样张准确率门槛（tests/test_real_samples_accuracy.py，deep 引擎
+  # + tests/baselines/ground_truth.json 人工真值）都已包含在上面的 pytest 里，
+  # 不需要单独 job —— 两者用的都是仓库内自带的真实样张（img/ + samples/），
+  # 前者确定性 cv 引擎、后者 OCR 模型随 wheel 分发，均不依赖外部数据集下载。
   #
-  # 想评"真实准确率"需要带标注的数据集，本仓库不内嵌（体积 + 版权）；
-  # 请在本地用 tools/eval_locate.py 配合自己的数据集跑，例如：
+  # 想评更大规模的真实准确率，请在本地用 tools/eval_locate.py 配合自己的
+  # 数据集跑，例如：
   #   python tools/eval_locate.py datasets/hg/test --grid quick

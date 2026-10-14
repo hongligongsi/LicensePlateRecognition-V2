@@ -16,7 +16,6 @@
       "min_aspect": 2.0,
       "max_aspect": 5.5,
       "color_ratio": 0.5,
-      "color_row_ratio": 0.8,
       "color_row_ratio_green": 0.5,
       "box_padding": 5,
       "min_chars": 6,

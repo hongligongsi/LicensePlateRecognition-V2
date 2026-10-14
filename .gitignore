@@ -33,6 +33,9 @@ datasets/
 _data/
 *_cache/
 
+# 全部识别测试图的集中副本（img/ + samples/ + datasets/ccpd_labeled/ 的拷贝，可复现）
+images/
+
 # 调参 / 评测产物（可复现，不入库）
 reports/
 
@@ -42,3 +45,9 @@ config.tuned.json
 
 # Agent 工作区
 .workbuddy/
+
+# 可选第二识别模型（体积大，按需下载，见 config.EngineConfig.secondary_rec_model）
+models/*.onnx
+
+# 对抗退化样张（工具确定性生成，内存消费）
+tests/baselines/hard/

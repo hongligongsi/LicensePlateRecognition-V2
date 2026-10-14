@@ -55,6 +55,17 @@ class LocateConfig:
     #: 车牌候选的长宽比范围
     min_aspect: float = 2.0
     max_aspect: float = 5.5
+    #: 双行牌召回下限：双行牌理论宽高比 2.0（440×220mm），但透视/倾斜
+    #: /裁剪后实测可低至 ~1.3（double_yellow.jpg 实测 1.86）。
+    #: 落在 [double_min_aspect, min_aspect] 的轮廓不直接丢弃，
+    #: 经"强底色"闸门后进入独立候选池。
+    double_min_aspect: float = 1.3
+    #: 双行牌区间候选的底色强度下限：核心区内蓝/黄/绿单色占比。
+    #: 真双行牌底色占比极高（实测双层黄牌 0.93），0.20 余量充足；
+    #: 方块状车身件/车灯的杂色很难越过这道闸门。
+    double_color_ratio: float = 0.20
+    #: 双行牌候选的独立配额（与常规/补救池分开，不挤占名额）
+    double_max_candidates: int = 2
     #: 颜色判定：某颜色像素占比超过该值即认定为此色。
     #:
     #: 注意它**不再**是"绝对过半"门槛（v2.3 起）：真实车牌上字符占了大量
@@ -66,10 +77,19 @@ class LocateConfig:
     #: 调大 → 更难判出彩色（更多回落到黑白/未知），适合误判率优先；
     #: 调小 → 更容易判出彩色，适合召回优先。默认 0.04。
     color_margin: float = 0.04
-    #: 精定位时某行/列颜色像素占比阈值
-    color_row_ratio: float = 0.8
     #: 绿牌渐变严重，横向阈值单独放宽
     color_row_ratio_green: float = 0.5
+    #: 精定位裁剪边界时行/列的**边缘占比下限**：某行/列只要还有这么多
+    #: 底色像素就认为仍落在牌内，予以保留。
+    #:
+    #: 旧实现用绝对底色阈值 0.8 定边界，但它只能罩住"纯底色"的行列，而
+    #: 车牌**末位字符紧贴牌缘**时，穿过该字符的列底色占比会被字符笔画咬到
+    #: 0.3~0.7，达不到 0.8 就被当边界裁掉——整字丢失。实测 CCPD
+    #: 皖AN9491→皖AN949、皖AV8008→皖A·V800（原始裁剪本已读对，精定位反而
+    #: 把尾字裁掉）。降到 0.15 后，牌外的行列占比≈0 仍被裁掉，牌内带字符
+    #: 的行列则全部保留，既保住尾字又不放过越界背景。
+    #: 绿牌因渐变严重（真实底色占比本就低）沿用 ``color_row_ratio_green``。
+    color_edge_ratio: float = 0.15
     #: 是否启用「危险品运输车辆」牌识别
     #:
     #: 危险品运输车悬挂的是**黑底黄字**牌，与普通黄牌（黄底黑字）底色相反。
@@ -83,6 +103,11 @@ class LocateConfig:
     #: 危险品牌判定：黄色前景占比较「黑底与黄字之和」的下限
     #: （即黄字在黑底上足够醒目，而非大片黄底上零星黑点）
     hazmat_fg_share: float = 0.06
+    #: 危险品牌判定：白色像素达到黄色像素的该倍数时，判定文字为白色
+    #: （黑底白字的普通黑牌，如港澳/使领馆牌），排除出危险品。
+    #: 真危险品牌上黄字是绝对前景、白色像素≈0；实测误判的黑底白字牌
+    #: white/yellow ≈ 1.0~3.2（黄色只是反光/红字渗色等噪声），取 0.7 隔开。
+    hazmat_white_ratio: float = 0.7
     #: 候选矩形外扩像素，防止车牌边缘被裁掉
     box_padding: int = 5
     #: 字符分割后要求的最少字符数（含省份简称共 7 位，留出容错）
@@ -95,8 +120,14 @@ class LocateConfig:
             raise ValueError("blur_kernel 必须是奇数或 0")
         if not 0 < self.color_ratio <= 1:
             raise ValueError("color_ratio 必须在 (0, 1]")
+        if not 0 < self.color_edge_ratio < 1:
+            raise ValueError("color_edge_ratio 必须在 (0, 1)")
         if self.min_aspect >= self.max_aspect:
             raise ValueError("min_aspect 必须小于 max_aspect")
+        if not 1.0 <= self.double_min_aspect < self.min_aspect:
+            raise ValueError("double_min_aspect 必须在 [1.0, min_aspect)")
+        if not 0 < self.double_color_ratio < 1:
+            raise ValueError("double_color_ratio 必须在 (0, 1)")
         if self.min_chars < 1:
             raise ValueError("min_chars 必须为正")
 
@@ -125,6 +156,22 @@ class EngineConfig:
     locate: LocateConfig = field(default_factory=LocateConfig)
     #: 字符识别时是否启用 SVM 置信度加权投票
     use_confidence: bool = True
+
+    #: 第二识别模型（ONNX）路径，用于**低置信交叉验证**。
+    #:
+    #: 主识别模型对某个候选完全读不出结果时，才用该模型补读并把读数
+    #: 并入投票——只在"本来会失败"的路径上激活，因此对已命中的样本
+    #: 零回归风险，只可能把失败样本救回来。实测 PP-OCRv4 mobile 与
+    #: 内置 v3 模型的错误模式互补（如低分辨率省份字），是合适的第二票。
+    #:
+    #: 空字符串 = 关闭（默认）。相对路径按项目根目录解析。
+    #: 模型下载（约 10MB）：
+    #:   https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/
+    #:   onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx
+    secondary_rec_model: str = ""
+    #: 第二模型读数的票权折扣（0~1]。主模型读数权为 1，第二模型略低，
+    #: 避免在两模型意见相左时反客为主。
+    secondary_vote_weight: float = 0.8
 
     def validate(self) -> None:
         if self.default not in ("cv", "deep", "cascade"):

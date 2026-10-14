@@ -48,14 +48,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..config import EngineConfig
+from ..config import PROJECT_ROOT, EngineConfig, LocateConfig
 from ..plate_rules import correct, is_valid, loose_match, plate_score
 from ..types import PlateColor, PlateLayout, PlateResult
 from ..utils.image import ensure_bgr, imread, resize_max_side
 from ..utils.logging_setup import get_logger
 from ..utils.security import Limits, check_image
 from .base import BaseEngine, EngineUnavailable
-from .locate import detect_color, locate_plates, refine_by_color
+from .locate import _red_mask, detect_color, locate_plates, refine_by_color
 
 logger = get_logger("engines.deep")
 
@@ -81,6 +81,9 @@ _PLATE_TEXT = re.compile(
     r"|WJ[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新][0-9]{4}[A-HJ-NP-Z0-9]?"
     r"|WJ[0-9]{5,7}"
     r"|民航[A-G][0-9]{3,4}"
+    # 农机号牌（省份 + 7 位纯数字，如 皖1149885）：双行绿牌上/下行拼合。
+    # 与其它省份开头分支无冲突（那些第 2 位均为字母）。
+    r"|[京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新][0-9]{7}"
     # 军牌 2012 式（双字母 + 5 位数字）没有汉字锚点，必须放在**最后**：
     # 放在前面会把 WJ012345 抢着切成 WJ01234（{5} 先匹配满就停）。
     r"|[A-HJ-NP-Z]{2}[0-9]{5}"
@@ -121,8 +124,16 @@ _BAND_BRIDGE_RATIO = 0.012
 _SINGLE_BAND_RATIO = 0.50
 
 #: 双行牌两行行带的高度相似度下限（min/max）。
-#: 真实双行牌上下行字号一致；上薄下厚多半是单行牌上方的装饰条。
-_BAND_HEIGHT_SIMILARITY = 0.55
+#: 取 0.50 而非更高：**农机双层牌上行（省简称+2 位机关码）字号本来就比
+#: 下行小一号**（实测 double_lv.png 两行带高比 0.53），"行高必须相近"
+#: 对农机牌不成立；而单行牌的装饰条厚度通常不足字符行的 1/3，0.50 仍可拦截。
+_BAND_HEIGHT_SIMILARITY = 0.50
+
+#: **红色尾字**集合：警牌末位「警」、领馆牌末位「领」是红色字符。
+#: 通用 OCR 对"小字号 + 低对比"的红色字符经常整字漏读（README 已知限制），
+#: 实测 沪A1707领 稳定读成 沪A1707、鄂F8888警 可能读成 鄂F8888。
+#: 只有这两个尾字是红色，其余后缀（学/挂/危/港/澳）为黑色，不适用此路径。
+_RED_TAIL_CHARS = frozenset("警领")
 
 
 def _extract_plate(cleaned: str) -> str | None:
@@ -345,9 +356,30 @@ def _to_single_line(roi: np.ndarray) -> list[np.ndarray]:
         new_w = max(1, round(band.shape[1] * scale))
         return cv2.resize(band, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
-    stacked = np.hstack([_fit_height(top), _fit_height(bottom)])
+    stacked = np.hstack([_fit_height(_trim_band_cols(top)), _fit_height(_trim_band_cols(bottom))])
     # 拼接后高宽比若已达单行牌特征（≥2.5:1），说明两行都是有效字符行
     return [roi, stacked]
+
+
+def _trim_band_cols(band: np.ndarray) -> np.ndarray:
+    """裁掉行带左右两侧的固封螺丝/牌框竖边等非字符列。
+
+    双层牌上行的固封螺丝是个圆形小铆钉，拼接进单行形态后会被 OCR
+    读成 "0"/"8"（实测 double_lv.png 上行"皖11"被读成"院078"）。
+    螺丝的列前景数不超过自身直径（远小于行高），而字符笔画纵贯行带，
+    用"列前景数 > 行高一半"即可只保留字符列；取最左/最右活跃列裁剪，
+    中间的间隙列（字符间空隙）原样保留。
+    """
+    h = band.shape[0]
+    binary = _char_binary(band)
+    col_counts = (binary > 0).sum(axis=0)
+    active = np.nonzero(col_counts > max(2, int(0.5 * h)))[0]
+    if active.size < 2:
+        return band
+    pad = max(1, int(0.05 * h))
+    x0 = max(0, int(active[0]) - pad)
+    x1 = min(band.shape[1], int(active[-1]) + 1 + pad)
+    return band[:, x0:x1] if x1 - x0 >= 4 else band
 
 
 def _band_profile(roi: np.ndarray) -> np.ndarray:
@@ -368,9 +400,26 @@ def _band_profile(roi: np.ndarray) -> np.ndarray:
     else:
         core = roi
 
-    gray = cv2.cvtColor(core, cv2.COLOR_BGR2GRAY) if core.ndim == 3 else core
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    return (binary > 0).sum(axis=1)
+    return (_char_binary(core) > 0).sum(axis=1)
+
+
+def _char_binary(roi: np.ndarray) -> np.ndarray:
+    """极性自适应的字符二值图（前景=字符）。
+
+    字符在牌面上永远是**少数派**（约占 20%~40% 面积）。
+    黄/绿牌是深字浅底，INV 极性前景稀疏（正确）；而绿底白字、黑底白字的
+    双层牌用 INV 会把**底色**当成前景——每行都铺满前景，行带永远切不出来
+    （实测 double_lv.png 的双层绿牌即卡在这里）。哪种极性的前景更稀疏，
+    哪种才是字符。退化情形（前景占比 <2%，基本是噪声）维持 INV 旧行为。
+    """
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    _, inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    inv_fg = float((inv > 0).mean())
+    if inv_fg < 0.02:
+        return inv
+    _, fwd = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    fwd_fg = float((fwd > 0).mean())
+    return fwd if fwd_fg < inv_fg else inv
 
 
 def _find_bands(profile: np.ndarray, h: int, width: int) -> list[tuple[int, int]]:
@@ -383,7 +432,10 @@ def _find_bands(profile: np.ndarray, h: int, width: int) -> list[tuple[int, int]
     if profile.size == 0 or profile.max() <= 0:
         return []
 
-    active = profile > max(1, int(0.02 * width))
+    # 活跃阈值取宽度的 8%：字符行的前景量级是每行几十像素，而双行牌
+    # 行间隙里常有 5% 左右的纹理/反光残噪（实测 double_lv.png 间隙行
+    # 仍有 6~7px/行），2% 的阈值会把间隙误判为活跃、把两行桥成一行。
+    active = profile > max(2, int(0.08 * width))
     # 桥接：把宽度小于 min_gap 的空白当噪声填掉（框线的抗锯齿/断开）
     min_gap = max(1, round(h * _BAND_BRIDGE_RATIO))
     filled = active.copy()
@@ -418,6 +470,15 @@ def _find_bands(profile: np.ndarray, h: int, width: int) -> list[tuple[int, int]
         if (band[1] - band[0]) > h * _SINGLE_BAND_RATIO:
             return []
         result.append(band)
+
+    # 边缘细条过滤：紧贴 ROI 上/下缘的薄带是**车牌水平框线**（白色牌框在
+    # 投影顶部/底部各形成一条几像素高的薄带），不是字符行。不滤掉的话
+    # 双行牌会被数出 3 段行带（框线+两行字），永远拆不开。
+    n = len(profile)
+    result = [
+        b for b in result
+        if not ((b[1] - b[0]) < 0.10 * h and (b[0] == 0 or b[1] == n))
+    ]
     return result
 
 
@@ -593,6 +654,8 @@ class DeepEngine(BaseEngine):
         self._models_dir = models_dir
         self._ocr = None
         self._recognizer = None
+        #: 第二识别器（低置信交叉验证），仅 rapidocr 后端 + 配置启用时加载
+        self._recognizer2 = None
         self._impl = ""
         self._locator_ready: bool | None = None
         #: 是否支持"跳过检测"的纯识别路径
@@ -645,11 +708,16 @@ class DeepEngine(BaseEngine):
         except Exception:
             self._locator_ready = False
 
+        # 可选：加载第二识别模型（低置信交叉验证）。任何失败都不影响主引擎。
+        if self._impl == "rapidocr" and self.config.secondary_rec_model:
+            self._load_secondary_recognizer()
+
         logger.info(
-            "深度学习引擎就绪 | 后端=%s | 定位引导=%s | 纯识别加速=%s",
+            "深度学习引擎就绪 | 后端=%s | 定位引导=%s | 纯识别加速=%s | 第二模型=%s",
             self._impl,
             "启用" if self._locator_ready else "关闭",
             "启用" if self._rec_only_supported else "关闭",
+            "启用" if self._recognizer2 is not None else "关闭",
         )
         self._ready = True
 
@@ -662,6 +730,60 @@ class DeepEngine(BaseEngine):
             except (KeyError, TypeError, ValueError) as exc:
                 logger.debug("RapidOCR 构造参数 %s 不被接受(%s)", kwargs, exc)
         raise EngineUnavailable("RapidOCR 初始化失败，请升级 rapidocr-onnxruntime")
+
+    def _load_secondary_recognizer(self) -> None:
+        """加载第二识别模型（低置信交叉验证）。
+
+        只取其中的**纯识别器**（text_recognizer），不跑它的检测网络。
+        任何异常都吞掉并记日志——交叉验证是锦上添花，绝不能让
+        第二模型的加载问题拖垮主引擎。
+
+        注意：rapidocr-onnxruntime 1.2.3 的 UpdateParameters 有缺陷，
+        ``rec_model_path`` 不能与任何 ``det_*`` 参数同传（会 KeyError），
+        因此这里只传模型路径。
+        """
+        try:
+            path = Path(self.config.secondary_rec_model)
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            if not path.exists():
+                logger.warning("第二识别模型不存在: %s，交叉验证关闭", path)
+                return
+
+            from rapidocr_onnxruntime import RapidOCR
+
+            ocr2 = RapidOCR(rec_model_path=str(path))
+            self._recognizer2 = getattr(ocr2, "text_recognizer", None)
+            if self._recognizer2 is None:
+                logger.warning("第二识别模型无 text_recognizer，交叉验证关闭")
+        except Exception:
+            logger.warning("第二识别模型加载失败，交叉验证关闭", exc_info=True)
+            self._recognizer2 = None
+
+    def _recognize2_detailed(self, img: np.ndarray) -> list[tuple[str, float, list[float]]]:
+        """用第二识别模型读一张图，输出格式与 :meth:`_recognize_only_detailed` 一致。
+
+        主路径的 ``get_boxes_img_without_det`` 会把整图视作一个文本框再切块，
+        这里直接送 ``[img]`` 给识别器即可（调用方传入的本来就是裁好的车牌）。
+        """
+        if self._recognizer2 is None:
+            return []
+        try:
+            results, _ = self._recognizer2([img])
+        except Exception:
+            logger.debug("第二模型识别异常", exc_info=True)
+            return []
+
+        out: list[tuple[str, float, list[float]]] = []
+        for item in results or []:
+            if not (isinstance(item, (list, tuple)) and len(item) >= 2):
+                continue
+            text, score = item[0], item[1]
+            if not text or float(score) <= 1e-3:
+                continue
+            char_probs = self._extract_char_probs(item, str(text), float(score))
+            out.append((str(text), float(score), char_probs))
+        return out
 
     # -------------------------------------------------------------- 识别
 
@@ -788,6 +910,102 @@ class DeepEngine(BaseEngine):
                     pass
         return [fallback] * len(text)
 
+    def _read_red_tail(self, roi: np.ndarray) -> tuple[str, float] | None:
+        """对车牌最右侧的红色字符条带做定向识别，返回 ``(字符, 置信度)``。
+
+        背景：警牌末位「警」、领馆牌末位「领」是**红色**字符，通用 OCR
+        模型对这种"小字号 + 低对比 + 非常规颜色"的字符经常整字漏读
+        （README 已知限制）。但红色本身是强特征——先用红色掩码列投影
+        精确定位它在车牌上的横向位置，把这一条带裁出来放大单独识别，
+        就把"全文找漏字"降维成了"单字认读"，识别网络只需处理一个字符。
+
+        Returns:
+            ``(红色尾字, 置信度)``；定位失败或认读不出合法尾字返回 ``None``。
+        """
+        if roi is None or roi.size == 0 or roi.ndim == 2:
+            return None
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        mask = _red_mask(hsv)
+        h, w = roi.shape[:2]
+        # 红像素总量过小 → 没有红色字符（挡掉零星反光）
+        if cv2.countNonZero(mask) < mask.size * 0.004:
+            return None
+
+        # 列投影找红色字符簇，取**最右侧**的一簇（警/领都在号码末位）
+        col_hits = cv2.reduce(mask, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).ravel() / 255.0
+        active = col_hits > max(1.0, 0.06 * h)
+        clusters: list[list[int]] = []
+        start = None
+        for i, flag in enumerate(active):
+            if flag and start is None:
+                start = i
+            elif not flag and start is not None:
+                clusters.append([start, i - 1])
+                start = None
+        if start is not None:
+            clusters.append([start, len(active) - 1])
+        # 合并被 1~2px 噪声断开的相邻簇
+        merged: list[list[int]] = []
+        for c in clusters:
+            if merged and c[0] - merged[-1][1] <= 2:
+                merged[-1][1] = c[1]
+            else:
+                merged.append(c)
+        if not merged:
+            return None
+        x0, x1 = merged[-1]
+        width = x1 - x0 + 1
+        # 单字符的合理宽度：车牌字符宽约为字高的 0.4~0.8 倍，条带高度≈车牌高
+        if not (0.15 * h <= width <= 1.6 * h):
+            return None
+        # 簇必须靠近右缘（尾字）；左侧红字是军牌字头/武警 WJ，不走此路径
+        if x1 < 0.65 * w:
+            return None
+
+        pad = max(2, round(width * 0.25))
+        band = roi[:, max(0, x0 - pad) : min(w, x1 + pad)]
+
+        # 1) 窄条带单字认读：图像质量够时 OCR 能直接读出该字
+        for factor in (5.0, 8.0, 3.0):
+            up = cv2.resize(band, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+            for text, score in self._recognize_only(up):
+                cleaned = _clean_text(text)
+                if len(cleaned) == 1 and cleaned in _RED_TAIL_CHARS:
+                    return cleaned, float(score)
+
+        # 2) 宽条带上 下文认读：窄裁剪信息量不足时，带上左侧邻字识别，
+        #    取读数**末位**。实测低质领馆牌会把「领」读成 0/7 等形近字符，
+        #    认不出时交给底色推断兜底。
+        wide = roi[:, max(0, x0 - int(2.5 * width)) : min(w, x1 + pad)]
+        for factor in (4.0, 6.0):
+            up = cv2.resize(wide, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+            for text, score, _probs in self._recognize_only_detailed(up):
+                cleaned = _clean_text(text)
+                if cleaned and cleaned[-1] in _RED_TAIL_CHARS:
+                    return cleaned[-1], float(score)
+        return None
+
+    @staticmethod
+    def _infer_red_tail(roi: np.ndarray) -> tuple[str, float] | None:
+        """按**底色极性**推断红色尾字的身份，返回 ``(字符, 置信度)``。
+
+        依据号牌板式的法定用色（GA36）：红色尾字只有两种——
+        警用号牌是**白底红「警」**，使领馆号牌是**黑底红「领」**。
+        因此只要确认"存在红色尾字 + 底色极性"，字符身份就是确定的：
+        这在字符太糊、OCR 认读失败时（实测会把「领」读成 0）仍能成立。
+
+        仅当底色是**纯白或纯黑**（而非蓝/黄/绿底混入白字）时才推断，
+        配合调用方的语法分闸门，误补面被双重兜住。
+        """
+        if roi is None or roi.size == 0 or roi.ndim == 2:
+            return None
+        color, ratio = detect_color(roi, LocateConfig())
+        if color is PlateColor.BLACK and ratio >= 0.3:
+            return "领", min(0.8, 0.4 + ratio * 0.5)
+        if color is PlateColor.WHITE and ratio >= 0.3:
+            return "警", min(0.8, 0.4 + ratio * 0.5)
+        return None
+
     def _recognize_candidates(
         self, candidates: list[tuple[np.ndarray, PlateColor, tuple]]
     ) -> list[PlateResult]:
@@ -857,6 +1075,33 @@ class DeepEngine(BaseEngine):
                             logger.debug("候选收敛于 %s（%d/%d 轮）", leader, rounds, len(plan))
                             break
 
+            # ---- 低置信交叉验证：主模型对该候选完全无产出时，
+            # 用第二识别模型补读。只会在"本来就要丢弃"的候选上触发，
+            # 对已命中的候选零影响；第二模型票权略低于主模型，
+            # 靠错误模式互补把失败样本救回来。
+            secondary_used = False
+            if not votes and self._recognizer2 is not None:
+                weight = float(np.clip(self.config.secondary_vote_weight, 0.0, 1.0))
+                for up, sharp in plan:
+                    for variant in variants:
+                        prepared = _sharpen(_upscale(variant, up), sharp)
+                        for text, score, char_probs in self._recognize2_detailed(prepared):
+                            cleaned = _clean_text(text)
+                            if not cleaned:
+                                continue
+                            raw_reads.append((cleaned, score * weight))
+                            candidate = _extract_plate(cleaned)
+                            if not candidate:
+                                continue
+                            secondary_used = True
+                            votes[candidate] = votes.get(candidate, 0.0) + score * weight * (
+                                0.5 + plate_score(candidate)
+                            )
+                            _accumulate_char_probs(char_probs_by_text, candidate, char_probs)
+                    # 已救回读数即可停：补救路径只求"有"，不求穷尽所有尺度
+                    if votes:
+                        break
+
             if not votes:
                 continue
 
@@ -888,6 +1133,18 @@ class DeepEngine(BaseEngine):
             share = max(share, 1.0 / max(1, len(votes)))
 
             corrected, changes = correct(winner)
+
+            # ---- 红色尾字定向识别（警/领）：OCR 对小字号红色字符常整字漏读，
+            # 这里用红色信号定位末位条带单独认读；认读失败时按底色极性推断
+            # （白底红尾字必是警、黑底红尾字必是领，GA36 法定用色）。
+            # 只在号码当前无中文尾字、长度合理、且补上后语法分**严格更高**时
+            # 采纳（防止把领馆牌错补成警牌——两者补后都合法，同分的不动）。
+            if corrected and corrected[-1].isascii() and len(corrected) in (5, 6, 7):
+                red_tail = self._read_red_tail(roi) or self._infer_red_tail(roi)
+                if red_tail is not None and plate_score(corrected + red_tail[0]) > plate_score(corrected):
+                    changes.append(f"红色尾字定向识别补回 {red_tail[0]!r}")
+                    logger.debug("红字定向识别: %s → %s", corrected, corrected + red_tail[0])
+                    corrected += red_tail[0]
             if changes:
                 logger.debug("规则纠错 %s → %s: %s", winner, corrected, "; ".join(changes))
 
@@ -924,6 +1181,8 @@ class DeepEngine(BaseEngine):
                         "corrections": changes,
                         "aspect": round(roi.shape[1] / max(1, roi.shape[0]), 2),
                         "split_double": layout is PlateLayout.DOUBLE,
+                        # 该结果是否由第二模型交叉验证救回
+                        "secondary_rescue": secondary_used,
                         # 最不可信的字符位置（0-based），便于人工复核与调参
                         "weak_chars": _weak_positions(char_confs),
                     },

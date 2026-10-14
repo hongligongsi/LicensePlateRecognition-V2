@@ -1,0 +1,86 @@
+{
+  "_note": "真实样张人工真值标注，由 tests/test_real_samples_accuracy.py 消费，构成准确率 CI 门槛。规则：除 known_failure 外每张样张的真值车牌必须全部命中，且底色必须与 color 一致。识别效果提升让 known_failure 命中后，应把它改成常规样本；新增样张时同步补标注。color 取值 = PlateColor 枚举值（black/blue/green/white/yellow/hazmat）。",
+  "_threshold": 0.9,
+  "samples": [
+    {
+      "path": "img/double_lv.png",
+      "plates": [
+        "皖1149885"
+      ],
+      "color": "green",
+      "known_failure": true,
+      "_note": "低分辨率双层绿牌。定位已修复（locate 纵向颜色扩展能框住完整双层、行带拆分正常），但上行皖11原图仅~15px高（数字1仅5px宽竖条）。已穷尽验证：PP-OCRv3/v4/v5 三模型 × 灰度/二值化/最近邻等 7 种预处理 × 逐字分割单独放大 10x 全部失败（最好结果：皖→馆/院，右偏旁对但声旁信息不足），属信息论极限而非算法缺陷。命中后请移出 known_failure。"
+    },
+    {
+      "path": "img/double_yellow.jpg",
+      "plates": [
+        "京EA5331"
+      ],
+      "color": "yellow"
+    },
+    {
+      "path": "img/e22e3d419cc627b985049e2cb26c079.jpg",
+      "plates": [
+        "川AA16U52"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/hongkang1.jpg",
+      "plates": [
+        "粤ZR066港"
+      ],
+      "color": "black"
+    },
+    {
+      "path": "img/police.jpg",
+      "plates": [
+        "鄂F8888警"
+      ],
+      "color": "white"
+    },
+    {
+      "path": "img/shi_lin_guan.jpg",
+      "plates": [
+        "沪A1707领"
+      ],
+      "color": "black"
+    },
+    {
+      "path": "img/single_blue.jpg",
+      "plates": [
+        "辽DU4356",
+        "浙B2V9L7"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/single_yellow.jpg",
+      "plates": [
+        "皖K66666"
+      ],
+      "color": "yellow"
+    },
+    {
+      "path": "img/xue.jpg",
+      "plates": [
+        "琼A6716学"
+      ],
+      "color": "yellow"
+    },
+    {
+      "path": "samples/1.jpg",
+      "plates": [
+        "京E51619"
+      ],
+      "color": "yellow"
+    },
+    {
+      "path": "samples/2.jpg",
+      "plates": [
+        "京AD77972"
+      ],
+      "color": "green"
+    }
+  ]
+}
