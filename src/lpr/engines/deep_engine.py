@@ -1004,18 +1004,50 @@ class DeepEngine(BaseEngine):
             return "警", min(0.8, 0.4 + ratio * 0.5)
         return None
 
+    def recognize_regions(
+        self,
+        regions: list[tuple[np.ndarray, PlateColor, tuple]],
+        *,
+        layout_hint: list[PlateLayout] | None = None,
+    ) -> list[PlateResult]:
+        """对**外部给定的**车牌区域做识别（多尺度投票 + 语法纠错 + 红字尾补）。
+
+        存在的理由：车牌识别里真正难的部分（多尺度投票、ROVER 逐列融合、
+        语法纠错、警/领红字尾定向识别）都在这条管线里。``yolo`` 引擎负责
+        **定位**（检测网络给角点），把矫正好的区域交给这里识别 ——
+        比在那边再抄一份识别逻辑可靠：抄出来的那份一定会随两边改动而漂移。
+
+        Args:
+            regions: ``[(roi, color, bbox), ...]``。``color`` 传
+                :attr:`PlateColor.UNKNOWN` 即可，本方法内部会重新判色。
+            layout_hint: 与 ``regions`` 等长的版式提示。外部检测器往往
+                **本来就知道**是单层还是双层，此时不必再靠行投影去猜；
+                传 ``UNKNOWN`` 的位置仍回落到 :func:`measure_layout`。
+
+        Returns:
+            识别结果列表；本方法不做跨区域去重，由调用方决定。
+        """
+        self.ensure_ready()
+        return self._recognize_candidates(regions, layout_hints=layout_hint)
+
     def _recognize_candidates(
-        self, candidates: list[tuple[np.ndarray, PlateColor, tuple]]
+        self,
+        candidates: list[tuple[np.ndarray, PlateColor, tuple]],
+        *,
+        layout_hints: list[PlateLayout] | None = None,
     ) -> list[PlateResult]:
         """对每个候选做多尺度识别 + 投票。
 
         单次识别仅 10~50ms，因此可以负担多个尺度；
         但仍在首个尺度就得到合法号码时立即停止（早停），
         实测典型场景每个候选只跑 1~2 次。
+
+        ``layout_hints`` 非空时按位置取用；为 ``None`` 或该位是
+        ``UNKNOWN`` 时回落到 :func:`measure_layout` 的行投影判定。
         """
         results: list[PlateResult] = []
 
-        for roi, color, bbox in candidates:
+        for cand_idx, (roi, color, bbox) in enumerate(candidates):
             votes: dict[str, float] = {}
             #: 每个候选串累积的逐字符置信度（多轮识别取逐位最大值）
             char_probs_by_text: dict[str, list[float]] = {}
@@ -1026,9 +1058,17 @@ class DeepEngine(BaseEngine):
             # 双行牌展开形态。
             # 借鉴参考实现 YOLO26-plate 的思路：**先在检测/定位阶段判定
             # 单层还是双层**，而不是对每个候选无脑尝试拆分。
-            # 这里用 measure_layout 做等价判定——只有确实是双层的候选
-            # 才生成拼接形态，单行牌只走原图，避免两倍无效识别开销。
-            layout = PlateLayout(measure_layout(roi))
+            # 这里优先用调用方给的版式提示——检测网络（如 yolo 引擎）本来
+            # 就有"单/双层"分类头，它的判断比行投影更可靠；没有提示时再退
+            # 回 measure_layout 的行分割证据。
+            hinted = (
+                layout_hints[cand_idx] if layout_hints and cand_idx < len(layout_hints) else None
+            )
+            layout = (
+                hinted
+                if hinted is not None and hinted is not PlateLayout.UNKNOWN
+                else PlateLayout(measure_layout(roi))
+            )
             variants = _to_single_line(roi) if layout is PlateLayout.DOUBLE else [roi]
 
             for up, sharp in plan:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lpr-v2"
-version = "2.4.4"
+version = "2.5.0"
 description = "中国车牌识别 v2 —— 传统 CV + 深度学习双引擎（升级自 hongligongsi/License-Plate-Recognition）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -59,6 +59,11 @@ dev = [
     "pytest-timeout>=2.2",
     "ruff>=0.6",
     "mypy>=1.10",
+    # onnx 只给测试与 tools/make_stub_onnx.py 用：有了它才能**不依赖任何
+    # 第三方权重**就构造出桩模型，把 yolo 引擎的整条推理链路（会话建立 →
+    # letterbox → 解码 → NMS → 逆变换 → 角点矫正）在 CI 上真跑一遍。
+    # 纯运行不需要它 —— 推理走 onnxruntime。
+    "onnx>=1.16",
 ]
 
 [project.scripts]

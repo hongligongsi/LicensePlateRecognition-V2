@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.4.4（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.5.0（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -29,6 +29,11 @@
 > 未使用 ignore、rapidocr 版本漂移致准确率门槛抽奖、Windows 管道编码），
 > 同时把项目许可从 MIT 切到 GPL-3.0-only；v2.4.4 新增 `yolo` 检测识别
 > 引擎骨架（第三个引擎，ONNX 推理，权重需自行准备）。
+> **v2.5.0 把 `yolo` 从骨架补成可用引擎**：实装 ONNX 推理全链路
+> （letterbox → 输出解码 → 类别感知 NMS → 逆 letterbox → 四点透视矫正 →
+> 字符识别），识别侧默认复用 `deep` 引擎的 OCR，另配三条取权重的路
+> （公开权重校验下载 / CCPD 自训练导出 / 纯检测模式），并提供了
+> **不依赖任何第三方权重**的桩模型自检工具，让 CI 能真正跑通整条管道。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -37,7 +42,7 @@
   - `cv` 传统 CV 引擎：OpenCV 形态学定位 + 投影分割 + SVM 字符识别（兼容原版模型），纯 CPU、**约 28 ms/张**、零额外依赖
   - `deep` 深度学习引擎：基于 RapidOCR（ONNX）/ PaddleOCR，中文省份简称与模糊车牌的准确率远高于 SVM，**约 190 ms/张**
   - `cascade` 级联：CV 快速定位给出候选 → 深度引擎精识别（精度与速度的折中），默认引擎
-  - `yolo` 检测识别引擎（**骨架，待补权重**）：车牌专用检测网络，一次前向同时给出 bbox + 四角点 + 单/双层分类，再做字符识别。对**侧倾、透视变形、模糊**车牌的定位召回优于轮廓法；ONNX 推理，不需要 PyTorch。权重需自行下载/训练，放置到 `models/yolo/` 后即自动启用，详见 [models/yolo/README.md](models/yolo/README.md)
+  - `yolo` 检测识别引擎（**已可用，需自备权重**）：车牌专用检测网络，一次前向同时给出 bbox + 四角点 + 单/双层分类，再用四点透视变换把倾斜车牌拉正后识别字符。对**侧倾、透视变形、模糊**车牌的定位召回优于轮廓法（`cv`/`deep` 靠形态学找轮廓，侧倾大了就找不到候选）。ONNX 推理，**不需要 PyTorch**。权重放到 `models/yolo/plate_det.onnx` 即自动启用；`python tools/fetch_yolo_weights.py --list` 看可取来源，或按 [models/yolo/README.md](models/yolo/README.md) 自行训练
 - **现代化 GUI**（PySide6）：单图 / 批量 / 摄像头实时识别，识别不再冻结画面，历史记录可导出 CSV
 - **命令行工具**：`lpr predict`、`lpr video`、`lpr gui`、`lpr engines`、`lpr check`、`lpr models`、`lpr config`
 - **参数自适应**：定位参数以比例表达，同一套配置适配 640px～4000px 输入（原版换分辨率就失效）
@@ -293,11 +298,17 @@ pip install -e ".[deep,gui]"
 pip install -e ".[deep-paddle]"
 
 # 可选：车牌检测网络引擎（ONNX 推理，需自备权重）
+# 只装 yolo 则字符识别缺席（纯检测模式）；要和识别一起用请装 ".[yolo,deep]"
 pip install -e ".[yolo]"
 
 # 开发（含测试）
 pip install -e ".[dev]"
 ```
+
+> **`.[yolo]` 装在哪儿、权重放哪儿**：extras 只装 `onnxruntime`；**权重不进仓库**。
+> 装完先跑 `python tools/make_stub_onnx.py --out models/yolo/plate_det.onnx --selftest`
+> 验证管道通不通（这条不联网、不要第三方权重），再按
+> [models/yolo/README.md](models/yolo/README.md) 换成真权重。
 
 > **注意**：`opencv-python` 必须是 **4.x**（`>=4.10,<5`）。OpenCV 5.0 移除了 `cv2.ml`，原版 SVM 模型将无法加载，`pyproject.toml` 已锁定上限。
 
@@ -438,14 +449,18 @@ tools/
 ├── tune_io.py                # 调参结果落盘（写进 engine.locate，自动备份）
 ├── fetch_ccpd.py             # 稳健下载 CCPD 样张
 ├── fetch_hg.py               # 下载带 YOLO 标注的评测集（支持 --limit 小规模验证）
+├── fetch_yolo_weights.py     # 取车牌检测权重：--list 看来源 / --url 带 SHA256 校验下载 / --inspect 体检
 ├── ccpd_labels.py            # CCPD 文件名标注解析
+├── ccpd_to_yolo.py           # CCPD → YOLO-pose 数据集转换（角点重排 + 单/双层分类 + 确定性划分）
+├── train_plate_yolo.py       # 训练 YOLO-pose 车牌检测并导出 ONNX（--export-only 可跳过训练）
+├── make_stub_onnx.py         # 生成**常量输出**的桩 ONNX 模型，无第三方权重也能自检整条管道
 ├── make_color_samples.py     # 合成六色样张，核对底色/危险品判定
 └── make_regression_baseline.py  # 生成真实样张行为快照基线
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 940 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 934 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 docs/THIRD_PARTY.md     # 第三方依赖许可证清单
@@ -455,7 +470,7 @@ docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 940 项单元/集成测试
+pytest tests/ -q                                    # 934 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -490,10 +505,30 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 
 ## 已知限制
 
-- `yolo` 检测识别引擎目前只有**骨架**：注册、可用性探测、权重路径解析、CLI/GUI
-  接入都已完成，但 `_detect()` / `_recognize_all()` 尚未实现，调用会抛
-  `NotImplementedError` 并给出实现指引。想用请先按
-  [models/yolo/README.md](models/yolo/README.md) 准备 ONNX 权重
+- **`yolo` 引擎的权重不进仓库**（体积 + 许可双重原因），所以装完 extras 后它
+  **大概率是「可见但不可用」**：推理链路已完整实现并有测试，但没权重就跑不了。
+  此时加载会抛一条带**绝对路径**和**安装命令**的 `EngineUnavailable`，照着做即可。
+  三条取权重的路见 [models/yolo/README.md](models/yolo/README.md)：公开权重校验下载 /
+  CCPD 自训练导出 / 纯检测模式
+- **`yolo` 的输出布局存在形状上无法消解的歧义**：Ultralytics 系是
+  `box + cls + kpts`，`we0091234` 系是 `box + obj + kpts + cls`，两者**属性个数
+  完全相同**（如都等于 15），只看张量形状无法区分。引擎默认按 Ultralytics 顺序解，
+  用另一种权重必须显式传 `attr_order="kpt_first"`（CLI 无此开关，需走
+  `YoloEngine(...)`）；给错的典型症状是框正常但角点乱飞、或分数恒为 0。
+  判定方法写在 `models/yolo/README.md`
+- **`yolo` 的字符识别默认复用 `deep` 引擎的 OCR**（不重复实现一套识别）。
+  因此只装了 `.[yolo]` 没装 `.[deep]` 时，`yolo` 退化为**纯检测模式**：
+  能给出框和单/双层分类，但文本为空。想要完整识别请装 `pip install -e ".[yolo,deep]"`
+- **"检到了但没认出"与"没检到"是两种结果**：检测成功而 OCR 无产出时，
+  结果里**保留框**、`text` 为空、`meta["ocr_failed"] = True`（不会静默丢框）。
+  所以"结果条数"与"识别成功条数"不是一回事，统计命中率时请认 `text` 非空
+- **没有"一键可用"的官方公开权重**：主流来源要么是 Git LFS 指针（拿到的是几十字节的
+  文本），要么在网盘后面。`tools/fetch_yolo_weights.py` 因此定位为**校验与体检工具**
+  （下载 + SHA256 校验 + 加载自检），而不是自动装配器
+- 自训练依赖 CCPD 数据集（约 12 GB / 30 万张），且**需要 PyTorch + Ultralytics**
+  （这两个包体积远大于本项目的运行时依赖，故**不在任何 extras 里**，请自行安装）。
+  转换脚本 `tools/ccpd_to_yolo.py` 会把 CCPD 的四角点从「右下→左下→左上→右上」
+  重排为 YOLO-pose 要求的「左上→右上→右下→左下」，并按宽高比切分单/双层类别
 - 传统 CV 引擎的 SVM 字符识别精度有限（原版模型训练样本太少，中文省份尤其差），
   且对任意输入都输出接近 1.0 的置信度 —— **需要精度请用 `deep` 或 `cascade`**
 - 深度引擎首次运行需下载 OCR 模型（约 10MB），之后离线可用

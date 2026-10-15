@@ -34,7 +34,7 @@ from pathlib import Path
 
 from . import __version__
 from .api import Recognizer
-from .config import Config
+from .config import ENGINE_CHOICES, Config
 from .engines import describe_engines
 from .plate_rules import correct, is_valid
 from .plate_rules import describe as describe_plate
@@ -64,8 +64,11 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--engine",
         default=None,
-        choices=["auto", "cv", "deep", "cascade"],
-        help="识别引擎：auto(自动) / cv(传统) / deep(深度学习) / cascade(级联，最省时)",
+        choices=["auto", *ENGINE_CHOICES],
+        help=(
+            "识别引擎：auto(自动) / cv(传统) / deep(深度学习) / cascade(级联，最省时)"
+            " / yolo(检测识别，需自备 ONNX 权重)"
+        ),
     )
     p.add_argument("--recursive", action="store_true", help="目录时递归查找子目录")
     p.add_argument(
@@ -100,7 +103,7 @@ def _make_parser() -> argparse.ArgumentParser:
     # ---------------------------------------------------------- video
     p = sub.add_parser("video", help="识别视频文件或摄像头")
     p.add_argument("input", help="视频路径，或摄像头编号（如 0）")
-    p.add_argument("--engine", default=None, choices=["auto", "cv", "deep", "cascade"])
+    p.add_argument("--engine", default=None, choices=["auto", *ENGINE_CHOICES])
     p.add_argument("--stride", type=int, default=10, help="每 N 帧识别一次（默认 10）")
     p.add_argument("--output", default=None, help="输出标注视频路径")
     p.add_argument("--mask", action="store_true", help="输出中打码")

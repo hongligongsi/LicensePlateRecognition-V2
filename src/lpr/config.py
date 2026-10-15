@@ -132,6 +132,16 @@ class LocateConfig:
             raise ValueError("min_chars 必须为正")
 
 
+#: 可作为 ``engine.default`` 的取值（**单一事实来源**）。
+#:
+#: 这里既有真引擎（``cv`` / ``deep`` / ``yolo``），也有 ``cascade`` 这个
+#: **别名**（解析成 deep；deep 内部本就是"CV 定位 → 纯识别"的级联）。
+#: 之所以收成常量：此前 ``("cv", "deep", "cascade")`` 在白名单里抄了三份
+#: （config.validate / cli 的 argparse choices ×2），加第三个引擎时漏改
+#: 一处就会出现"config 认、CLI 不认"的割裂。
+ENGINE_CHOICES = ("cv", "deep", "cascade", "yolo")
+
+
 @dataclass
 class EngineConfig:
     """引擎选择与运行方式。
@@ -148,7 +158,10 @@ class EngineConfig:
     后者决定要不要跨引擎兜底。
     """
 
-    #: 默认引擎："cv"（传统，快但精度有限）| "deep"（深度学习，推荐）| "cascade"（= deep，含 CV 定位引导）
+    #: 默认引擎：
+    #:   ``"cv"``（传统，快但精度有限）| ``"deep"``（深度学习，推荐）
+    #:   | ``"cascade"``（= deep，含 CV 定位引导）
+    #:   | ``"yolo"``（检测识别引擎，需自备 ONNX 权重，见 models/yolo/README.md）
     default: str = "cascade"
     #: 跨引擎兜底策略："single"（只跑主引擎）| "cascade"（主引擎未命中时再试另一个可用引擎）
     mode: str = "single"
@@ -174,8 +187,10 @@ class EngineConfig:
     secondary_vote_weight: float = 0.8
 
     def validate(self) -> None:
-        if self.default not in ("cv", "deep", "cascade"):
-            raise ValueError(f"未知引擎: {self.default}")
+        #: ``yolo`` 在列 —— 它是**真引擎**（有权重时可用），不是 cascade 那样的别名。
+        #: 此前白名单里没有它，导致权重装好了也选不动（只能在 CLI 里看到它"不可用"）。
+        if self.default not in ENGINE_CHOICES:
+            raise ValueError(f"未知引擎: {self.default}（可选: {', '.join(ENGINE_CHOICES)}）")
         if self.mode not in ("single", "cascade"):
             raise ValueError(f"未知模式: {self.mode}")
         self.locate.validate()
@@ -387,6 +402,7 @@ def _coerce(value: Any, current: Any, ftype: Any) -> Any:
 
 __all__ = [
     "DEFAULT_CONFIG_PATH",
+    "ENGINE_CHOICES",
     "MODELS_DIR",
     "PROJECT_ROOT",
     "Config",

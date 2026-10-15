@@ -49,5 +49,10 @@ config.tuned.json
 # 可选第二识别模型（体积大，按需下载，见 config.EngineConfig.secondary_rec_model）
 models/*.onnx
 
+# 检测识别引擎（yolo）的权重与字符表：仓库不分发，由用户下载/自训后放入。
+# 只忽略权重本身，models/yolo/README.md 要留在库里（放置说明与许可义务）。
+models/yolo/*.onnx
+models/yolo/charset.txt
+
 # 对抗退化样张（工具确定性生成，内存消费）
 tests/baselines/hard/

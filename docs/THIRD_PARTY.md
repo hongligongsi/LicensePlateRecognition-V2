@@ -45,6 +45,54 @@
 | pytest-timeout | 2.4.0 | DFSG approved（MIT 系） |
 | ruff | 0.17.0 | MIT |
 | mypy | 2.4.0 | MIT |
+| onnx | 1.23.2 | Apache-2.0 |
+
+> `onnx` 只用于**测试与造桩**（`tools/make_stub_onnx.py` 构造常量输出的
+> `.onnx` 文件、校验形状），**运行时不需要** —— 运行时只依赖 `onnxruntime`。
+> 把它放进 `dev` 而不是 `yolo` extra，是为了让 `pip install -e ".[yolo]"` 的用户
+> 不必为一个造测试数据的包买单。
+
+## 模型权重：本仓库不分发
+
+这是本项目**唯一需要用户自行判断许可**的部分，所以单列。
+
+| 权重 | 来源 | 许可 | 仓库是否分发 |
+|---|---|---|---|
+| `models/svm.dat`、`models/svmchinese.dat` | 原项目 EasyPR 样本训练 | MIT（随原项目） | **是**（`config.json` 内置 SHA256） |
+| `models/yolo/plate_det.onnx` | 用户自行准备 | **取决于用户所选来源** | **否**（`.gitignore` 已排除） |
+| `models/yolo/plate_rec.onnx` | 用户自行准备 | 同上 | **否** |
+| `models/yolo/charset.txt` | 需与识别权重配套 | 同上 | **否** |
+| RapidOCR / PaddleOCR 的 OCR 模型 | 首次运行自动下载 | Apache-2.0 | 否（缓存到用户目录） |
+
+**为什么 `yolo` 权重不进仓库**：主流车牌检测权重多派生自 Ultralytics
+（AGPL-3.0）或 `we0091234`（GPL-3.0）。把它们**随仓库分发**意味着本项目要
+额外承担 AGPL 的传染义务（尤其 AGPL 对网络服务分发的要求），而本项目自身
+是 GPL-3.0-only。让用户自己取权重、仓库只提供**加载与校验工具**，是刻意
+选择的边界。
+
+**用户自取权重时的义务提示**（`tools/fetch_yolo_weights.py --list` 会打印）：
+
+- Ultralytics 血统的权重 → **AGPL-3.0**：把它们用在与他人交互的网络服务里，
+  需按 AGPL 提供完整源码（含你对本项目的修改）；
+- `we0091234/Chinese_license_plate_detection_recognition` 的权重 → **GPL-3.0**，
+  与本项目兼容，但再分发时同样要提供源码；
+- OpenCV Model Zoo 的 LPD 系（Apache-2.0）许可最宽松，但**输出格式不同**
+  （YuNet 多输出头，非单张量 pose 式），**本引擎不支持**，工具会明确拒绝
+  并说明原因，而不是让它悄悄加载失败。
+
+## 训练链路的额外依赖（不进任何 extra）
+
+`tools/train_plate_yolo.py` 与 `tools/ccpd_to_yolo.py` 的自训练路线需要：
+
+| 组件 | 许可 | 说明 |
+|---|---|---|
+| PyTorch | BSD-3-Clause | 训练与导出；体积数百 MB 起 |
+| Ultralytics | **AGPL-3.0** | `yolo11n-pose.pt` 等预训练骨架与训练器 |
+| CCPD 数据集 | MIT（学术使用） | 约 12 GB / 30 万张，标注编码在文件名里 |
+
+这三者**不在 `pyproject.toml` 的任何 extra 里**，需用户自行安装。原因是体积
+（PyTorch 一个包就超过本项目全部运行时依赖之和）与许可（AGPL）都不适合
+设为默认路径。转换与训练脚本在缺少它们时会给出明确的安装提示。
 
 ## 历史与参考
 

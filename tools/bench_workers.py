@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from lpr.api import Recognizer
 from lpr.batch import _cpu_budget, resolve_workers
+from lpr.config import ENGINE_CHOICES
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -89,7 +90,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="批量识别多进程加速基准")
     ap.add_argument("--images", default="datasets/ccpd_raw", help="图片目录")
     ap.add_argument("--limit", type=int, default=160, help="最多取多少张（0=全部）")
-    ap.add_argument("--engine", default="deep", choices=["cv", "deep", "cascade"])
+    ap.add_argument("--engine", default="deep", choices=list(ENGINE_CHOICES))
     ap.add_argument("--workers", type=int, nargs="+", default=[1, 4], help="要对比的进程数")
     ap.add_argument("--repeat", type=int, default=1, help="每个配置重复次数（取中位）")
     ap.add_argument("--json", metavar="PATH", help="把结果写成 JSON")

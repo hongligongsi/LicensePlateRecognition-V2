@@ -231,9 +231,11 @@ class Recognizer:
     ) -> None:
         """
         Args:
-            engine: ``"auto"`` / ``"cv"`` / ``"deep"`` / ``"cascade"``。
+            engine: ``"auto"`` / ``"cv"`` / ``"deep"`` / ``"cascade"`` / ``"yolo"``。
                 * ``auto``：优先 deep，不可用则退回 cv
                 * ``cascade``：cv 定位筛候选 + deep 精确识别（最省时的组合）
+                * ``yolo``：检测识别引擎（**需自备 ONNX 权重**，权重缺失时
+                  会抛 :class:`EngineUnavailable` 并给出放权重的确切路径）
             config: 全局配置。
             limits: 安全限制；**不传则回落到 ``config.security``**（v2.3.1 修复）。
             privacy: 隐私策略；**不传则回落到 ``config.security``**（v2.3.1 修复）。
@@ -275,7 +277,13 @@ class Recognizer:
 
     @staticmethod
     def _resolve_engine(requested: str) -> str:
-        """把请求的引擎名解析成实际可用的引擎名。"""
+        """把请求的引擎名解析成实际可用的引擎名。
+
+        ``auto`` / ``cascade`` 是**策略**，需要挑一个具体引擎；其余名字
+        （``cv`` / ``deep`` / ``yolo``）是**具体引擎**，原样返回 ——
+        可用性由调用方在 ``get_engine`` 时判断，这里不替它做决定：
+        用户明确点名 ``yolo`` 却拿到 ``deep`` 的结果，比直接报错更难排查。
+        """
         infos = Recognizer._available_map()
         if requested == "auto":
             for name in ("deep", "cv"):
