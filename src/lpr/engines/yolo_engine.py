@@ -558,10 +558,10 @@ class YoloEngine(BaseEngine):
         num_classes: int = 2,
         point_dim: int | None = None,
         has_objectness: bool | None = None,
-        attr_order: str = ATTR_ORDER_CLS_FIRST,
+        attr_order: str | None = None,
         double_class_ids: tuple[int, ...] = (1,),
         rgb: bool = True,
-        recognize_backend: str = "auto",
+        recognize_backend: str | None = None,
     ) -> None:
         """
         Args:
@@ -580,7 +580,16 @@ class YoloEngine(BaseEngine):
         """
         super().__init__()
         self.config = config
-        self.models_dir = locate_model_dir(models_dir)
+        #: 参数解析优先级：**显式实参 > config（yolo_* 字段）> 引擎默认值**。
+        #: config 来源见 ``EngineConfig.yolo_attr_order`` 等（GUI/CLI 走这条路）。
+        cfg_attr_order = getattr(config, "yolo_attr_order", "") if config else ""
+        cfg_backend = getattr(config, "yolo_recognize_backend", "") if config else ""
+        cfg_models_dir = getattr(config, "yolo_models_dir", "") if config else ""
+        self.models_dir = locate_model_dir(
+            models_dir
+            if models_dir is not None
+            else (Path(cfg_models_dir) if cfg_models_dir else None)
+        )
         self.input_size = input_size
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
@@ -589,10 +598,14 @@ class YoloEngine(BaseEngine):
         self.num_classes = num_classes
         self.point_dim = point_dim
         self.has_objectness = has_objectness
-        self.attr_order = attr_order
+        self.attr_order = (
+            attr_order if attr_order is not None else (cfg_attr_order or ATTR_ORDER_CLS_FIRST)
+        )
         self.double_class_ids = tuple(double_class_ids)
         self.rgb = rgb
-        self.recognize_backend = recognize_backend
+        self.recognize_backend = (
+            recognize_backend if recognize_backend is not None else (cfg_backend or "auto")
+        )
 
         self._detect_session: Any = None
         self._recognize_session: Any = None

@@ -57,8 +57,8 @@ python tools/make_stub_onnx.py --layout v8-pose --out models/yolo/plate_det.onnx
 
 | `attr_order` | 列顺序 | 典型来源 |
 |---|---|---|
-| `cls_first`（默认） | box + obj + **cls** + **kpts** | Ultralytics `yolo export` |
-| `kpt_first` | box + obj + **kpts** + **cls** | `we0091234` 系 `plate_detect.onnx` |
+| `cls_first`（引擎默认） | box + obj + **cls** + **kpts** | Ultralytics `yolo export` |
+| `kpt_first`（**配置默认**） | box + obj + **kpts** + **cls** | `we0091234` 系 `plate_detect.onnx` |
 
 **猜错不会报错**，只会把角点当类别读、类别当角点读，得到一堆看似合理的错框
 （随后大概率被宽高比过滤掉，表现为"什么都检测不到"）。
@@ -69,6 +69,12 @@ python tools/make_stub_onnx.py --layout v8-pose --out models/yolo/plate_det.onnx
 ```python
 YoloEngine(attr_order="kpt_first")   # 接 we0091234 系权重时必须显式指定
 ```
+
+**CLI/GUI 不用手动设**：配置默认 `engine.yolo_attr_order = "kpt_first"`，
+正好对齐路径 A 的 we0091234 权重，落盘 `plate_det.onnx` 后下拉框里就能直接用。
+（Ultralytics 导出的权重请在配置里改回 `"cls_first"`。）
+显式实参 > 配置 > 引擎默认值（`cls_first`），三层优先级见
+`EngineConfig.yolo_attr_order` 的文档。
 
 ## 获取权重的三条路
 

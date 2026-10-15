@@ -1867,3 +1867,76 @@ FAILED ...test_results_are_matched_by_bbox_not_by_position
   拿不到可信数字，所以 README 里只写"定位召回优于轮廓法"这个**机制性**判断，
   不写具体百分比。
 
+
+---
+
+## v2.5.1 —— yolo 引擎真实权重跑通 + `attr_order` 进配置
+
+日期：2026-10-15
+
+### 一、这次解决的是什么
+
+v2.5.0 交付时 `yolo` 引擎"代码可用但实际不可用"——手里没有能落盘的
+`plate_det.onnx`，GUI 下拉框里它一直显示**（不可用）**。本次把这条
+"最后一公里"走通了：**真实 GPL 权重已导出为 ONNX 并本地验证通过**。
+
+### 二、权重获取实录（可复现）
+
+1. `we0091234/Chinese_license_plate_detection_recognition` 的
+   `weights/plate_detect.pt`（1.17 MB）**可以下载了**（v2.5.0 时记录的
+   "LFS 指针/网盘" 状况已变化，`main` 分支直接挂普通文件）。
+   raw.githubusercontent 不通时，可走 `api.github.com` 的 Git Blobs API
+   （base64）拿文件；仓库源码用 `.../tarball` 端点拿。
+2. 用**官方仓库自带的 `export.py`** 导出 ONNX（不是 Ultralytics CLI）：
+   - 依赖：`torch` / `torchvision` / `onnx` / `onnxscript` / `PIL` /
+     `scipy` / `thop`（装在临时 venv，不进项目依赖）；
+   - **坑 1**：torch ≥ 2.6 默认 `weights_only=True`，旧检查点加载直接炸，
+     给 `attempt_load` 的 `torch.load` 补 `weights_only=False`；
+   - **坑 2**：新导出器把权重写成**外部数据文件** `plate_detect.onnx.data`，
+     引擎加载会报 `External data path validation failed`。用
+     `onnx.load(...)`（自动带上外部数据）+ `onnx.save_model(...,
+     save_as_external_data=False)` 内嵌成**单文件** 3.19 MB；
+   - **坑 3**：codeload 的 tar 端点 404，改用
+     `api.github.com/repos/<repo>/tarball/<ref>`；下载中途被杀会留下
+     截断的 tar.gz，`tar -tzf` 能查出来。仓库整体 33 MB，走代理太慢时
+     可以按 Git Trees API 逐文件抓 `models/` + `utils/` 的 .py（共 42 个）。
+3. 体检：`tools/fetch_yolo_weights.py --inspect` 报
+   `output [1, 25200, 15]`，与预期布局一致（`kpt_first`，has_objectness）。
+
+### 三、端到端实测（真实权重，非桩模型）
+
+| 样张 | 结果 |
+|---|---|
+| `samples/1.jpg` | `京E51619`（黄牌）+ `京PAP315`（蓝牌），置信度 1.00，检测分 0.89/0.72 |
+| `samples/2.jpg` | `京AD77972`（绿牌新能源），置信度 0.98 |
+
+识别复用 deep 引擎的 OCR（`recognize_backend="auto"`），底色分类一并给出。
+对比一个反面数据：同样的图走错列序（cls_first）时输出乱码、
+"置信度" 1.40（合法值 ≤ 1）——列顺序给错的破坏性可见一斑。
+
+### 四、`attr_order` 进配置（修掉 v2.5.0 留下的缺口）
+
+`EngineConfig` 新增三个字段，GUI/CLI 无需任何开关即随配置生效：
+
+- `yolo_attr_order`：**默认 `"kpt_first"`**（对齐路径 A 的 we0091234 权重，
+  绝大多数用户取权重就走这条路；Ultralytics 导出的请改 `"cls_first"`）；
+- `yolo_recognize_backend`：`auto` / `crnn` / `deep` / `none`，默认 `auto`；
+- `yolo_models_dir`：权重目录，空 = 默认 `models/yolo`。
+
+优先级：**显式实参 > config > 引擎默认值**；非法值在 `validate()` 拒绝。
+此前"只能在 Python 里传"的缺口由此关闭。
+
+### 五、验证
+
+- 本机全量 pytest **941 项全绿**（`941 passed, 126.1s`，`--junitxml` 读数；
+  新增 `TestConfigPlumbing` 7 项：4 个优先级用例 + 1 个字段透传 +
+  2 个参数化校验）；
+- `ruff check` / `ruff format --check` / `mypy` 全过；
+- CLI `lpr predict --engine yolo` 与引擎状态页均走默认配置实测。
+
+### 六、仍未做到的（不做假象）
+
+- **权重文件本身仍不进仓库**（`.gitignore` 里 `models/yolo/*.onnx` 不变），
+  本节只保证"照着做 10 分钟内能落盘"；
+- 自训练路线仍只验证到数据集格式与导出脚本可调用，没跑完整训练；
+- 与 `cv`/`deep` 的准确率对比仍缺带标注的评测集，维持机制性表述。

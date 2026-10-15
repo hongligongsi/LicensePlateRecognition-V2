@@ -34,6 +34,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from lpr.config import EngineConfig  # noqa: E402
 from lpr.engines import YoloEngine, available_engines, create_engine, describe_engines  # noqa: E402
 from lpr.engines.yolo_engine import (  # noqa: E402
     ATTR_ORDER_CLS_FIRST,
@@ -182,6 +183,52 @@ class TestDefaultsAndConfig:
     def test_default_attr_order_is_cls_first(self):
         """默认列顺序必须与 Ultralytics 一致（主流导出）。"""
         assert YoloEngine().attr_order == ATTR_ORDER_CLS_FIRST
+
+
+class TestConfigPlumbing:
+    """GUI/CLI 走 ``EngineConfig.yolo_*`` 字段 —— 接错了界面上就是乱框。"""
+
+    def test_default_config_yields_kpt_first(self):
+        """config 默认 kpt_first：与 models/yolo/README.md 路径 A（we0091234）匹配。
+
+        实测踩过的坑：CLI 走默认 cls_first 时，同一张图解出乱码文本、
+        置信度 1.40（合法值应 <= 1）。
+        """
+        engine = create_engine("yolo", EngineConfig())
+        assert engine.attr_order == "kpt_first"
+
+    def test_config_can_switch_to_cls_first(self):
+        config = EngineConfig(yolo_attr_order="cls_first")
+        assert create_engine("yolo", config).attr_order == ATTR_ORDER_CLS_FIRST
+
+    def test_explicit_kwarg_overrides_config(self):
+        """显式实参 > config —— Python 调用方能压过配置文件。"""
+        engine = create_engine("yolo", EngineConfig(), attr_order=ATTR_ORDER_CLS_FIRST)
+        assert engine.attr_order == ATTR_ORDER_CLS_FIRST
+
+    def test_no_config_falls_back_to_engine_default(self):
+        assert create_engine("yolo").attr_order == ATTR_ORDER_CLS_FIRST
+
+    def test_recognize_backend_and_models_dir_plumb_through(self, tmp_path):
+        config = EngineConfig(
+            yolo_recognize_backend="none",
+            yolo_models_dir=str(tmp_path),
+        )
+        engine = create_engine("yolo", config)
+        assert engine.recognize_backend == "none"
+        assert engine.models_dir == tmp_path
+        assert engine.detect_model_path == tmp_path / DETECT_MODEL_NAME
+
+    @pytest.mark.parametrize(
+        ("field", "bad"),
+        [
+            ("yolo_attr_order", "bogus"),
+            ("yolo_recognize_backend", "bogus"),
+        ],
+    )
+    def test_invalid_values_are_rejected(self, field, bad):
+        with pytest.raises(ValueError, match=field):
+            EngineConfig(**{field: bad}).validate()
 
 
 class TestDetectionDataclass:

@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.5.0（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.5.1（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -34,6 +34,9 @@
 > 字符识别），识别侧默认复用 `deep` 引擎的 OCR，另配三条取权重的路
 > （公开权重校验下载 / CCPD 自训练导出 / 纯检测模式），并提供了
 > **不依赖任何第三方权重**的桩模型自检工具，让 CI 能真正跑通整条管道。
+> v2.5.1 用真实 GPL 权重实测跑通（`京E51619` / `京PAP315` / `京AD77972`），
+> 并把 `attr_order` 接进配置（默认 `kpt_first` 对齐 we0091234 权重，
+> GUI/CLI 开箱即用）。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -460,7 +463,7 @@ models/                 # 预训练 SVM 模型（原版权重，config.json 内�
 models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 934 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 941 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 docs/THIRD_PARTY.md     # 第三方依赖许可证清单
@@ -470,7 +473,7 @@ docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 934 项单元/集成测试
+pytest tests/ -q                                    # 941 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -512,9 +515,11 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
   CCPD 自训练导出 / 纯检测模式
 - **`yolo` 的输出布局存在形状上无法消解的歧义**：Ultralytics 系是
   `box + cls + kpts`，`we0091234` 系是 `box + obj + kpts + cls`，两者**属性个数
-  完全相同**（如都等于 15），只看张量形状无法区分。引擎默认按 Ultralytics 顺序解，
-  用另一种权重必须显式传 `attr_order="kpt_first"`（CLI 无此开关，需走
-  `YoloEngine(...)`）；给错的典型症状是框正常但角点乱飞、或分数恒为 0。
+  完全相同**（如都等于 15），只看张量形状无法区分。配置默认
+  `engine.yolo_attr_order = "kpt_first"`（对齐 `models/yolo/README.md` 路径 A 的
+  we0091234 权重，GUI/CLI 开箱即用）；用 **Ultralytics 导出**的权重请把配置改成
+  `"cls_first"`，或在 Python 里传 `YoloEngine(attr_order="cls_first")`。
+  给错的典型症状是框正常但角点乱飞、或分数恒为 0。
   判定方法写在 `models/yolo/README.md`
 - **`yolo` 的字符识别默认复用 `deep` 引擎的 OCR**（不重复实现一套识别）。
   因此只装了 `.[yolo]` 没装 `.[deep]` 时，`yolo` 退化为**纯检测模式**：

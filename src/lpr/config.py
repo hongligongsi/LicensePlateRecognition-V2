@@ -186,6 +186,25 @@ class EngineConfig:
     #: 避免在两模型意见相左时反客为主。
     secondary_vote_weight: float = 0.8
 
+    #: yolo 引擎：检测模型输出的**属性列顺序**：``"cls_first"``
+    #: （Ultralytics 导出：box+cls+kpts）| ``"kpt_first"``（we0091234 系：
+    #: box+obj+kpts+cls）。
+    #:
+    #: 两种布局**属性个数相同，形状区分不出来**，用错了框会整体错位，
+    #: 因此必须显式声明。默认 ``"kpt_first"``：``models/yolo/README.md``
+    #: 路径 A（GPL-3.0 的 we0091234 权重，经官方 export.py 导出 ONNX）就是
+    #: 这个列序，也是绝大多数用户的取权重路径。用 Ultralytics 自训练导出
+    #: 的请改成 ``"cls_first"``。
+    yolo_attr_order: str = "kpt_first"
+    #: yolo 引擎：字符识别后端。``"auto"``（优先检测模型自带的识别模型
+    #: ``plate_rec.onnx``，没有则复用 deep 引擎的 OCR）| ``"crnn"``（只用
+    #: 自带识别模型）| ``"deep"``（强制走 deep 的 OCR）| ``"none"``（纯检测，
+    #: 返回带框但 text 为空的结果）。
+    yolo_recognize_backend: str = "auto"
+    #: yolo 引擎：权重目录（放 ``plate_det.onnx`` 的地方）。空 = 默认
+    #: ``<项目根>/models/yolo``。
+    yolo_models_dir: str = ""
+
     def validate(self) -> None:
         #: ``yolo`` 在列 —— 它是**真引擎**（有权重时可用），不是 cascade 那样的别名。
         #: 此前白名单里没有它，导致权重装好了也选不动（只能在 CLI 里看到它"不可用"）。
@@ -193,6 +212,15 @@ class EngineConfig:
             raise ValueError(f"未知引擎: {self.default}（可选: {', '.join(ENGINE_CHOICES)}）")
         if self.mode not in ("single", "cascade"):
             raise ValueError(f"未知模式: {self.mode}")
+        if self.yolo_attr_order not in ("cls_first", "kpt_first"):
+            raise ValueError(
+                f"未知 yolo_attr_order: {self.yolo_attr_order}（可选: cls_first, kpt_first）"
+            )
+        if self.yolo_recognize_backend not in ("auto", "crnn", "deep", "none"):
+            raise ValueError(
+                f"未知 yolo_recognize_backend: {self.yolo_recognize_backend}"
+                "（可选: auto, crnn, deep, none）"
+            )
         self.locate.validate()
 
 
