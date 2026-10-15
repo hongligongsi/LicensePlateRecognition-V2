@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.5.1（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.6.0（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -37,15 +37,29 @@
 > v2.5.1 用真实 GPL 权重实测跑通（`京E51619` / `京PAP315` / `京AD77972`），
 > 并把 `attr_order` 接进配置（默认 `kpt_first` 对齐 we0091234 权重，
 > GUI/CLI 开箱即用）。
+> **v2.6.0 新增第四个引擎 `fusion`（三合一）**：把 `cv` / `deep` / `yolo`
+> 编排成一个引擎，三种策略（并联投票融合 / 顺序兜底链 / 特征选优）配置切换，
+> 成员缺权重自动退席，融合结果带各成员读数与票数明细。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
 
-- **多引擎可切换**（三个后端共用同一套接口，`lpr engines` 可列出可用性）
+- **多引擎可切换**（四个后端共用同一套接口，`lpr engines` 可列出可用性）
   - `cv` 传统 CV 引擎：OpenCV 形态学定位 + 投影分割 + SVM 字符识别（兼容原版模型），纯 CPU、**约 28 ms/张**、零额外依赖
   - `deep` 深度学习引擎：基于 RapidOCR（ONNX）/ PaddleOCR，中文省份简称与模糊车牌的准确率远高于 SVM，**约 190 ms/张**
   - `cascade` 级联：CV 快速定位给出候选 → 深度引擎精识别（精度与速度的折中），默认引擎
   - `yolo` 检测识别引擎（**已可用，需自备权重**）：车牌专用检测网络，一次前向同时给出 bbox + 四角点 + 单/双层分类，再用四点透视变换把倾斜车牌拉正后识别字符。对**侧倾、透视变形、模糊**车牌的定位召回优于轮廓法（`cv`/`deep` 靠形态学找轮廓，侧倾大了就找不到候选）。ONNX 推理，**不需要 PyTorch**。权重放到 `models/yolo/plate_det.onnx` 即自动启用；`python tools/fetch_yolo_weights.py --list` 看可取来源，或按 [models/yolo/README.md](models/yolo/README.md) 自行训练
+  - `fusion` **三合一引擎**：把上面三个引擎编排成一个，三种策略可选
+    （`engine.fusion_strategy`）：
+    - `ensemble`（默认）**并联投票融合** —— 三个引擎各跑一次，落在同一处的框归为一组，
+      组内按 `引擎权重 × 置信度` 投票，票高者胜出；结果里带 `meta["fusion"]`
+      写明每个成员读了什么（谁是少数派一目了然）
+    - `chain` **顺序兜底链** —— 依次尝试，拿到 `confidence ≥ 0.75` 的结果就停（省时）
+    - `auto` **特征选优** —— 按长边分辨率与模糊度排序后按序试（小图/糊图先上检测网络）
+    成员缺权重或缺依赖会**自动退席**（少一票，不影响其余成员）；
+    默认还带一条**准入规则**：孤立候选要凑到第二个成员的票才留，或票权达到 1.0
+    才能独存 —— 因为实测 `cv` 在 4096×2304 的真实样张上会给 9 条候选（7 条误检），
+    而 `yolo` 给 2 条全中；只做并集会让最弱成员污染输出
 - **现代化 GUI**（PySide6）：单图 / 批量 / 摄像头实时识别，识别不再冻结画面，历史记录可导出 CSV
 - **命令行工具**：`lpr predict`、`lpr video`、`lpr gui`、`lpr engines`、`lpr check`、`lpr models`、`lpr config`
 - **参数自适应**：定位参数以比例表达，同一套配置适配 640px～4000px 输入（原版换分辨率就失效）
@@ -279,6 +293,7 @@ lpr engines                      # 看看当前环境有哪些引擎可用
 | `deep`（推荐） | `rapidocr-onnxruntime` | 否，模型 13.7 MB 在 wheel 内 |
 | `deep-paddle` | `paddleocr` + `paddlepaddle` | **首次运行会联网下载模型**，离线环境别用 |
 | `yolo`（实验） | `onnxruntime>=1.16` | **是**，`models/yolo/*.onnx` 需自行准备 |
+| `fusion`（三合一） | 无额外依赖（用成员各自所需的那份） | 取决于成员：`cv`/`deep` 装完即用，`yolo` 需权重 |
 | 图形界面 | `PySide6-Essentials>=6.5` | 否 |
 
 > 界面只用到 `QtCore` / `QtGui` / `QtWidgets`，因此依赖 `PySide6-Essentials`
@@ -463,7 +478,7 @@ models/                 # 预训练 SVM 模型（原版权重，config.json 内�
 models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 941 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 1018 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 docs/THIRD_PARTY.md     # 第三方依赖许可证清单
@@ -473,7 +488,7 @@ docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 941 项单元/集成测试
+pytest tests/ -q                                    # 1018 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -508,6 +523,22 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 
 ## 已知限制
 
+- **`fusion`（三合一）的耗时≈成员之和**：`ensemble` 策略下三个引擎各跑一次，
+  实测 `samples/1.jpg`（4096×2304，两块车牌）约 **2.2 s/张**，而单引擎
+  `yolo` ≈ 0.9 s、`deep` ≈ 0.8 s。它换的是**精度与召回**，不是速度；
+  要快就用 `chain`（命中即停）或 `auto`（单引擎）
+- **`fusion` 的 `auto` 策略本质是单引擎**：它只按图像特征挑一个跑。实测
+  `samples/1.jpg` 是"大图 + 清晰"，按规则选了 `deep`，结果只报出 **1 块**
+  车牌（远景那块小牌漏了），而 `yolo` 能报出 2 块 —— 所以**要召回就别用 auto**。
+  这是如实记录，不是"自动选优一定更好"
+- **`fusion` 的准入规则会丢候选，且丢的是"低票孤立结果"**：默认要求"至少两个
+  成员一致"或"票权 ≥ 1.0 的成员独存"。实测这条规则把 `cv` 在真实大图上的
+  6~7 条孤立误检滤掉了（`samples/1.jpg`：融合前 9 条噪声 → 融合后 2 条全对）。
+  被滤掉的候选不是静默丢弃：`FusionEngine.last_dropped` 里能查到，
+  日志也会列出号码。想取并集（最大召回）把 `engine.fusion_min_support` 设成 1
+- **Python API 的 `engine` 参数默认是 `"auto"`，不读 `config.engine.default`**：
+  想让 API 也用配置里的默认引擎（例如 `fusion`），要显式传
+  `Recognizer(engine=config.engine.default)`；CLI 与 GUI 都是显式传的，不受影响
 - **`yolo` 引擎的权重不进仓库**（体积 + 许可双重原因），所以装完 extras 后它
   **大概率是「可见但不可用」**：推理链路已完整实现并有测试，但没权重就跑不了。
   此时加载会抛一条带**绝对路径**和**安装命令**的 `EngineUnavailable`，照着做即可。

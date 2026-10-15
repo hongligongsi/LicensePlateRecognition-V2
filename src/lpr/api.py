@@ -231,11 +231,14 @@ class Recognizer:
     ) -> None:
         """
         Args:
-            engine: ``"auto"`` / ``"cv"`` / ``"deep"`` / ``"cascade"`` / ``"yolo"``。
+            engine: ``"auto"`` / ``"cv"`` / ``"deep"`` / ``"cascade"`` / ``"yolo"``
+                / ``"fusion"``。
                 * ``auto``：优先 deep，不可用则退回 cv
                 * ``cascade``：cv 定位筛候选 + deep 精确识别（最省时的组合）
                 * ``yolo``：检测识别引擎（**需自备 ONNX 权重**，权重缺失时
                   会抛 :class:`EngineUnavailable` 并给出放权重的确切路径）
+                * ``fusion``：三合一引擎（同时编排 cv / deep / yolo，策略见
+                  ``config.engine.fusion_strategy``）
             config: 全局配置。
             limits: 安全限制；**不传则回落到 ``config.security``**（v2.3.1 修复）。
             privacy: 隐私策略；**不传则回落到 ``config.security``**（v2.3.1 修复）。
@@ -245,6 +248,13 @@ class Recognizer:
            ``Limits()`` / ``PrivacyPolicy()``，导致 ``config.json`` 里的
            ``security`` 段（以及 ``LPR_MASK_OUTPUT`` 环境变量）**只在 CLI
            路径生效，走 Python API 时被完全忽略**。现在两处都会正确回落。
+
+        .. note::
+           本参数的默认值是字符串 ``"auto"``，**不是** ``config.engine.default``。
+           也就是说 Python API 不指定 ``engine`` 时走"自动挑一个可用引擎"，
+           而 CLI/GUI 会显式把 ``config.engine.default`` 传进来。
+           想让 API 也用配置里的默认引擎，请显式传：
+           ``Recognizer(engine=config.engine.default)``。
         """
         self.config = config or Config.load()
         # 关键：显式传参 > config.security > 库默认值
@@ -280,7 +290,7 @@ class Recognizer:
         """把请求的引擎名解析成实际可用的引擎名。
 
         ``auto`` / ``cascade`` 是**策略**，需要挑一个具体引擎；其余名字
-        （``cv`` / ``deep`` / ``yolo``）是**具体引擎**，原样返回 ——
+        （``cv`` / ``deep`` / ``yolo`` / ``fusion``）是**具体引擎**，原样返回 ——
         可用性由调用方在 ``get_engine`` 时判断，这里不替它做决定：
         用户明确点名 ``yolo`` 却拿到 ``deep`` 的结果，比直接报错更难排查。
         """

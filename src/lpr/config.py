@@ -134,12 +134,17 @@ class LocateConfig:
 
 #: 可作为 ``engine.default`` 的取值（**单一事实来源**）。
 #:
-#: 这里既有真引擎（``cv`` / ``deep`` / ``yolo``），也有 ``cascade`` 这个
-#: **别名**（解析成 deep；deep 内部本就是"CV 定位 → 纯识别"的级联）。
+#: 这里既有真引擎（``cv`` / ``deep`` / ``yolo`` / ``fusion``），也有 ``cascade``
+#: 这个**别名**（解析成 deep；deep 内部本就是"CV 定位 → 纯识别"的级联）。
 #: 之所以收成常量：此前 ``("cv", "deep", "cascade")`` 在白名单里抄了三份
 #: （config.validate / cli 的 argparse choices ×2），加第三个引擎时漏改
 #: 一处就会出现"config 认、CLI 不认"的割裂。
-ENGINE_CHOICES = ("cv", "deep", "cascade", "yolo")
+ENGINE_CHOICES = ("cv", "deep", "cascade", "yolo", "fusion")
+
+#: 可以作为**融合成员**的引擎：都是具体引擎，不含别名与 ``fusion`` 自己
+FUSION_MEMBER_CHOICES = ("cv", "deep", "yolo")
+#: 融合引擎的策略
+FUSION_STRATEGIES = ("ensemble", "chain", "auto")
 
 
 @dataclass
@@ -205,9 +210,42 @@ class EngineConfig:
     #: ``<项目根>/models/yolo``。
     yolo_models_dir: str = ""
 
+    #: 三合一引擎（``fusion``）的策略：
+    #:   ``"ensemble"``（默认）并联投票融合 —— 所有可用成员各跑一次，按空间
+    #:   分组后组内投票，准确率与召回都高于任一单引擎，耗时≈三者相加；
+    #:   ``"chain"`` 顺序兜底链 —— 依次尝试，拿到够可信的结果就停；
+    #:   ``"auto"`` 特征选优 —— 按图像特征（分辨率/模糊度）排序后按序试。
+    fusion_strategy: str = "ensemble"
+    #: 融合成员及顺序（顺序即 ``chain`` 的尝试顺序）。
+    #: 只能填具体引擎；成员缺依赖或缺权重时**自动退席**，不影响其余成员。
+    fusion_members: tuple[str, ...] = ("yolo", "deep", "cv")
+    #: 各成员的票权（仅 ``ensemble`` 用）。缺省成员按 1.0 计。
+    #: 传统 CV 给 0.6：清晰正视角下很可靠，但整体错误率高于另两个。
+    fusion_engine_weights: dict[str, float] = field(
+        default_factory=lambda: {"yolo": 1.0, "deep": 1.0, "cv": 0.6}
+    )
+    #: 同一车牌的分组 IoU 阈值（``ensemble`` 用）：两框重叠超过它即视为
+    #: 同一个车牌，进入同一组投票。
+    fusion_group_iou: float = 0.4
+    #: ``chain`` 的"够可信"门槛：某成员给出 ``confidence >= 该值`` 的读数就停，
+    #: 不再试后面的成员。
+    fusion_chain_accept: float = 0.75
+    #: 融合结果要留下所需的**最少一致成员数**（``ensemble`` 用）。
+    #: 默认 2 = 至少两个成员一致才留（或票权达到 ``fusion_trusted_weight``
+    #: 的成员独存）。
+    #:
+    #: 为什么不是 1（并集）？实测：``cv`` 引擎在 4096×2304 的真实样张上给
+    #: 9 条候选（7 条误检），而 ``yolo`` 给 2 条全中、``deep`` 给 1 条全中。
+    #: 只做并集会让最弱成员的误检全部污染输出。取 1 则退化为并集（最大召回）。
+    fusion_min_support: int = 2
+    #: 单成员独存所需的票权阈值：胜出号码的票权达到它就保留，不看票数。
+    #: 默认 1.0 = ``yolo`` / ``deep`` 这类权重 1.0 的成员可以独存；
+    #: ``cv``（默认票权 0.6）的孤立结果则需要第二个成员背书。
+    fusion_trusted_weight: float = 1.0
+
     def validate(self) -> None:
-        #: ``yolo`` 在列 —— 它是**真引擎**（有权重时可用），不是 cascade 那样的别名。
-        #: 此前白名单里没有它，导致权重装好了也选不动（只能在 CLI 里看到它"不可用"）。
+        #: ``yolo`` / ``fusion`` 都在列 —— 它们是**真引擎**，不是 cascade 那样的别名。
+        #: 此前白名单里没有 yolo，导致权重装好了也选不动（只能在 CLI 里看到它"不可用"）。
         if self.default not in ENGINE_CHOICES:
             raise ValueError(f"未知引擎: {self.default}（可选: {', '.join(ENGINE_CHOICES)}）")
         if self.mode not in ("single", "cascade"):
@@ -221,7 +259,44 @@ class EngineConfig:
                 f"未知 yolo_recognize_backend: {self.yolo_recognize_backend}"
                 "（可选: auto, crnn, deep, none）"
             )
+        self._validate_fusion()
         self.locate.validate()
+
+    def _validate_fusion(self) -> None:
+        """融合引擎的字段校验。
+
+        这里**故意不 import** ``engines`` 包（config 是被引擎导入的底层模块，
+        反向依赖会成环），成员白名单用 :data:`FUSION_MEMBER_CHOICES` 这份常量；
+        两者的同步由 ``tests/test_fusion_engine.py`` 断言。
+        """
+        if self.fusion_strategy not in FUSION_STRATEGIES:
+            raise ValueError(
+                f"未知 fusion_strategy: {self.fusion_strategy}"
+                f"（可选: {', '.join(FUSION_STRATEGIES)}）"
+            )
+        if not self.fusion_members:
+            raise ValueError("fusion_members 不能为空")
+        seen: set[str] = set()
+        for name in self.fusion_members:
+            if name not in FUSION_MEMBER_CHOICES:
+                raise ValueError(
+                    f"未知 fusion_members 成员: {name!r}"
+                    f"（可选: {', '.join(FUSION_MEMBER_CHOICES)}；策略名与 fusion 本身不能当成员）"
+                )
+            if name in seen:
+                raise ValueError(f"fusion_members 成员重复: {name!r}")
+            seen.add(name)
+        for name, weight in self.fusion_engine_weights.items():
+            if weight <= 0:
+                raise ValueError(f"fusion_engine_weights[{name!r}] 必须为正数，当前 {weight}")
+        if not 0.0 < self.fusion_group_iou <= 1.0:
+            raise ValueError(f"fusion_group_iou 必须在 (0, 1]，当前 {self.fusion_group_iou}")
+        if not 0.0 <= self.fusion_chain_accept <= 1.0:
+            raise ValueError(f"fusion_chain_accept 必须在 [0, 1]，当前 {self.fusion_chain_accept}")
+        if self.fusion_min_support < 1:
+            raise ValueError(f"fusion_min_support 至少为 1，当前 {self.fusion_min_support}")
+        if self.fusion_trusted_weight < 0:
+            raise ValueError(f"fusion_trusted_weight 不能为负，当前 {self.fusion_trusted_weight}")
 
 
 @dataclass
@@ -431,6 +506,8 @@ def _coerce(value: Any, current: Any, ftype: Any) -> Any:
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "ENGINE_CHOICES",
+    "FUSION_MEMBER_CHOICES",
+    "FUSION_STRATEGIES",
     "MODELS_DIR",
     "PROJECT_ROOT",
     "Config",

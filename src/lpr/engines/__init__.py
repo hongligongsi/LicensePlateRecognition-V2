@@ -10,6 +10,7 @@ from .base import BaseEngine, EngineUnavailable
 # 导入即注册内置引擎（放在 registry 之后，避免循环导入）
 from .cv_engine import CVEngine
 from .deep_engine import DeepEngine
+from .fusion_engine import FusionEngine
 from .registry import (
     INFERENCE_LOCK,
     available_engines,
@@ -24,6 +25,7 @@ from .yolo_engine import YoloEngine
 register_engine(CVEngine)
 register_engine(DeepEngine)
 register_engine(YoloEngine)
+register_engine(FusionEngine)
 
 __all__ = [
     "INFERENCE_LOCK",
@@ -31,6 +33,7 @@ __all__ = [
     "CVEngine",
     "DeepEngine",
     "EngineUnavailable",
+    "FusionEngine",
     "YoloEngine",
     "available_engines",
     "clear_instances",

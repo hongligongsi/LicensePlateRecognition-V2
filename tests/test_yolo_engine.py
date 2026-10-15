@@ -67,9 +67,9 @@ class TestRegistration:
     def test_engine_is_registered(self):
         assert "yolo" in available_engines()
 
-    def test_registry_order_includes_all_three(self):
-        # 三个内置引擎都要在，且顺序稳定（下拉框按名字排序）
-        assert available_engines() == ["cv", "deep", "yolo"]
+    def test_registry_order_includes_all_engines(self):
+        # 内置引擎都要在，且顺序稳定（下拉框按名字排序）
+        assert available_engines() == ["cv", "deep", "fusion", "yolo"]
 
     def test_describe_engines_carries_display_name_and_reason(self):
         info = next(e for e in describe_engines() if e["name"] == "yolo")
