@@ -304,9 +304,7 @@ class TestConfigPersistence:
         saved = json.loads(config_path.read_text(encoding="utf-8"))
         assert saved["engine"]["default"] == "deep"
 
-    def test_automatic_fallback_does_not_touch_the_file(
-        self, qt_app, monkeypatch, config_path
-    ):
+    def test_automatic_fallback_does_not_touch_the_file(self, qt_app, monkeypatch, config_path):
         """配置里的引擎不可用时只回落内存，**不改**用户的配置文件。"""
         from lpr.ui.window import MainWindow
 
