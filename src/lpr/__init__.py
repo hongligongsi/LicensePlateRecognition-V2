@@ -22,6 +22,7 @@ from .engines import (
     CVEngine,
     DeepEngine,
     available_engines,
+    describe_engine_choices,
     describe_engines,
     get_engine,
     register_engine,
@@ -42,7 +43,7 @@ from .utils.security import (
 
 #: 版本号唯一来源。``cli.VERSION``、界面标题、状态栏都从这里取，
 #: 不再各自维护字面量（v2.3.9 之前这里停在 2.3.1，与 pyproject 各说各话）。
-__version__ = "2.7.3"
+__version__ = "2.7.4"
 
 __all__ = [
     "COLOR_NAMES",
@@ -69,6 +70,7 @@ __all__ = [
     # 规则与跟踪
     "correct",
     "current_log_file",
+    "describe_engine_choices",
     "describe_engines",
     "describe_plate",
     "get_engine",

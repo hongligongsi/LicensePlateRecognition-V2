@@ -35,7 +35,7 @@ from pathlib import Path
 from . import __version__
 from .api import Recognizer
 from .config import ENGINE_CHOICES, Config
-from .engines import describe_engines
+from .engines import describe_engine_choices
 from .plate_rules import correct, is_valid
 from .plate_rules import describe as describe_plate
 from .types import parse_color
@@ -333,13 +333,27 @@ def cmd_gui(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_engines(args: argparse.Namespace, cfg: Config) -> int:
+    rows = describe_engine_choices()
     print(f"{'引擎':<16} {'状态':<8} 说明")
     print("-" * 78)
-    for row in describe_engines():
+    for row in rows:
         status = "可用" if row["available"] else "不可用"
-        print(f"{row['display_name']:<16} {status:<8} {row['description']}")
+        # 策略名打星号：它不是独立实现，而是"用哪个具体引擎"的规则
+        label = row["display_name"] + ("*" if row.get("strategy") else "")
+        print(f"{label:<16} {status:<8} {row['description']}")
         if not row["available"]:
             print(f"{'':<16} {'':<8} 原因: {row['reason']}")
+    if any(row.get("strategy") for row in rows):
+        print()
+        print("* 策略名：非独立引擎实现，运行时按说明里的顺序解析成具体引擎。")
+    # 顺带回答最常被问的那句：「config.json 里写的 default 到底会跑谁」
+    configured = cfg.engine.default
+    matched = next((row for row in rows if row["name"] == configured), None)
+    if matched is None:
+        print(f"当前 config.json 的 engine.default = {configured} → 不在清单里，会回落到可用引擎")
+    else:
+        state = "可用" if matched["available"] else f"不可用（{matched['reason']}）"
+        print(f"当前 config.json 的 engine.default = {configured} → {state}")
     return 0
 
 

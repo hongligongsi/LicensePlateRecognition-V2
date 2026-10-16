@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.7.3（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.7.4（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌 / 危险品运输牌。
 
@@ -433,7 +433,7 @@ logs/
 |---|---|---|---|---|
 | `cv` | 传统 CV，快但精度有限 | 无 | 自动（入库） | **28 ms**（`samples/`）/ 36 ms（CCPD） |
 | `deep` | 定位引导 OCR，精度主力 | `rapidocr-onnxruntime` | 自动（随 wheel） | **194 ms**（`samples/`）/ 716 ms（CCPD） |
-| `cascade` | `cv` 定位 + `deep` 识别（= deep 的别名） | 同 `deep` | 自动 | 同 `deep` |
+| `cascade` | `cv` 定位 + `deep` 识别（= deep 的**别名**，非独立引擎） | 同 `deep` | 自动 | 同 `deep` |
 | `yolo` | 车牌专用检测网络 + 识别 | `onnxruntime` | **需自备** | **125 ms**（CCPD） |
 | `fusion` | 把上面三个编排成一个 | 成员各自所需 | 取决于成员 | 190 ms（chain）～ 1737 ms（ensemble） |
 
@@ -473,6 +473,29 @@ CV 快速定位给出候选 → 深度引擎精识别，是**精度与速度的�
 > 与之**正交**的另一个字段是 `engine.mode`：`"cascade"` 时主引擎没命中会自动
 > 再试另一个可用引擎（跨引擎兜底），`"single"` 只跑主引擎。
 > 所以 `default="cascade"` + `mode="single"` 并不矛盾。详见 [§8.2](#82-engine--引擎选择)。
+
+它是**别名**，不是注册表里的引擎（`get_engine("cascade")` 查不到，`lpr engines` 里
+带 `*` 号标出）：运行时按 `deep` → `cv` 的顺序解析成具体引擎（见
+`config.CASCADE_RESOLVE_ORDER`），所以界面下拉框、`lpr engines`、CLI 的 `--engine`
+都必须接受它。v2.7.4 修掉的正是一个"不接受它"的地方 —— 界面下拉框此前只列真引擎，
+配置里的 `cascade` 找不到对应项，于是被当成不可用、**静默改写**成第一项 `cv`：
+
+```
+配置的默认引擎 cascade 不可用，界面实际使用 cv     ← v2.7.3 及以前
+```
+
+这句话两处都错：`cascade` 不是不可用（它只是别名），而且改写是悄悄发生的。
+代价用 `tests/baselines/ground_truth.json` 的 11 张人工真值样张量过：
+
+| 引擎 | 命中 |
+|---|---|
+| `cv`（界面降级后实际跑的） | **0 / 11** |
+| `cascade`（配置里写的 → `deep`） | **10 / 11** |
+
+也就是说界面每次启动都把准确率从 10/11 掉到 0/11。现在下拉框把 `cascade` 列为独立选项
+（显示名「级联引擎」，紧跟「深度学习引擎」），选中它就**不再改写配置**；
+真遇到不可用的引擎时（例如 `yolo` 没放权重）仍会回落，但日志升为 `warning` 并写明
+原因与回落目标，配置里写的值保持不动。
 
 ### 4.5 `yolo` —— 检测识别引擎
 
@@ -711,13 +734,17 @@ lpr --log-level DEBUG predict a.jpg        # 写在子命令前面同样生效
 - **摄像头实时识别**：采集与识别在**两个独立线程**里跑 —— 采集线程只管 `cap.read()`
   和刷画面，识别线程始终取"最新一帧"推理。识别慢于采集时不会积压帧，
   画面按摄像头原生帧率刷新
-- **引擎下拉框热切换**，不可用的引擎自动置灰并给出安装提示
+- **引擎下拉框热切换**，不可用的引擎自动置灰并给出安装提示。下拉框里**含 `cascade`**
+  （配默认值 `cascade` 时启动就选中它）—— 它是 `deep` 的别名，不是独立引擎，
+  但必须能选中；否则配置里的 `cascade` 会被当成"不可用"、静默降级成 `cv`
+  （见 §4.4 的实测代价）。你手动选的引擎会**写回 `config.json`**（`engine.default`），
+  下次启动沿用；而**自动回落不会**改你的配置文件
 - **结果区**：号码按国标配色渲染成车牌的样子（蓝/黄/绿/白/黑）、车牌缩略图、
   颜色徽章、一键复制号码；一张图检出多块车牌时**候选表**列出全部（点行回显），
   不再只显示最高分的一条
 - **历史行点击回显**该条结果，识别历史可导出 CSV
 - **浅色 / 深色双主题**：视图菜单或 Ctrl+1 / Ctrl+2 切换，选择写回 `config.json`
-  （`ui.theme`）下次启动沿用
+  （`ui.theme`）下次启动沿用。v2.7.4 前这句是假的 —— 只改了内存，重开又回到浅色
 - **「运行日志」面板**：实时显示最近的日志（内存缓冲，最多 200 行），下面一行是
   **日志文件路径**（可选中复制）+「打开日志目录」按钮。启动时窗口标题下方也会打
   一条 `运行日志 → <路径>`
@@ -850,16 +877,26 @@ for plate in rec.recognize_video("parking.mp4", stride=10):
 ### 7.3 底层引擎接口
 
 ```python
-from lpr import get_engine, describe_engines, available_engines, setup_logging
+from lpr import (
+    available_engines,
+    describe_engine_choices,
+    describe_engines,
+    get_engine,
+    setup_logging,
+)
 
 setup_logging("INFO")
 engine = get_engine("deep")
 for r in engine.predict("car.jpg"):
     print(r.text, r.color.label, r.confidence, r.bbox)
 
-# 引擎清单与可用性（GUI 的引擎下拉框就是用它填的）
+# 真引擎清单与可用性（**不含** cascade 这类别名）
 for row in describe_engines():
     print(row["name"], row["display_name"], row["available"], row.get("reason", ""))
+
+# 界面下拉框与 `lpr engines` 用的清单：真引擎 + 策略别名（row["strategy"] is True）
+for row in describe_engine_choices():
+    print(row["name"], row["display_name"], row["available"], row.get("strategy", False))
 ```
 
 引擎是**按 `(name, config fingerprint)` 共享的单例**，推理通过 `INFERENCE_LOCK` 串行化
@@ -958,7 +995,7 @@ for plate in tracker.update(engine.predict(frame)):
 
 | 字段 | 默认 | 取值 | 说明 |
 |---|---|---|---|
-| `default` | `"cascade"` | `cv` / `deep` / `cascade` / `yolo` / `fusion` | 默认引擎。`cascade` 是 `deep` 的别名 |
+| `default` | `"cascade"` | `cv` / `deep` / `cascade` / `yolo` / `fusion` | 默认引擎。`cascade` 是 `deep` 的别名（非独立引擎，界面里是可选中项，见 §4.4） |
 | `mode` | `"single"` | `single` / `cascade` | **跨引擎兜底**：`cascade` 时主引擎返回空会自动再试另一个可用引擎 |
 | `use_confidence` | `true` | 布尔 | CV 引擎字符识别是否启用 SVM 置信度加权投票 |
 
@@ -1342,7 +1379,7 @@ samples/  img/          # 真实测试样张（回归基线与准确率门槛的
 logs/                   # 运行日志（自动创建；主进程 + 每个子进程一个文件）—— §3.8
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
                         #   加 doctor 参数为只读环境体检
-tests/                  # 1195 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 1217 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比（逐版本）
 docs/ACCURACY.md        # 准确率实测与提升路线（v2.7.0，v2.7.2 增补）
@@ -1359,13 +1396,13 @@ docs/screenshot.png     # 界面截图（README 顶部引用）
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 1195 项单元/集成测试
+pytest tests/ -q                                    # 1217 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 pytest tests/ -q --timeout=300                       # 建议加超时（CI 就是这么跑的）
 ruff check src tools tests && mypy                  # 静态检查
 ```
 
-### 13.2 测试规模（1195 项，按文件）
+### 13.2 测试规模（1217 项，按文件）
 
 | 测试文件 | 项数 | 覆盖 |
 |---|---|---|
@@ -1386,6 +1423,7 @@ ruff check src tools tests && mypy                  # 静态检查
 | `test_ccpd_to_yolo.py` | 35 | 数据集转换（角点重排、单/双层、划分确定性） |
 | `test_batch_parallel.py` | 31 | 多进程：顺序、隔离、ROI 取舍、退回串行、子进程日志 |
 | `test_deep_preprocess.py` | 30 | 多尺度放大 / 锐化 / 早停 |
+| `test_engine_choices.py` | 22 | 引擎清单契约：`cascade` 别名可选、界面不改配置、偏好落盘 |
 | `test_regression_baseline.py` | 22 | 真实样张定位行为快照 |
 | `test_tracker.py` | 22 | 跨帧跟踪与同图去重 |
 | `test_eval_weak.py` | 18 | 弱监督评测 |
@@ -1530,6 +1568,7 @@ python tools/shot.py reports/ui.png --sample samples/1.jpg
 | `logs/` 里一堆 `-p<数字>.log` | `--workers` 多进程，每个子进程一个文件 | 正常行为，见 §3.8。只看主进程的 `lpr-<日期>.log` 即可 |
 | 日志里有 `皖A***45` 这种掩码 | `security.mask_logs`（默认开）在起作用 | 这是隐私保护，不是 bug；确实要看明文就把它关掉，但**别在真实数据上关** |
 | 日志文件长到几十 MB | `log_max_mb` 调大了，或某次跑了极长的批 | 默认 5MB 就轮转，保留 5 份，不会无限增长；嫌多把 `log_backups` 调小 |
+| 日志说「配置的默认引擎 `cascade` 不可用，界面实际使用 `cv`」 | v2.7.3 及以前界面下拉框没列 `cascade`（它是 `deep` 的别名），于是当成"不可用"并改写配置 | 升级到 **v2.7.4**。判据：这条日志**不存在**才对。升不了版本就把 `engine.default` 临时改成 `deep`（两者等价），别让它继续跑 `cv`（见 §4.4 的准确率对比） |
 
 ---
 
@@ -1738,5 +1777,6 @@ GPL-3.0；但依据 MIT 的保留条款，**原作者的版权与许可声明必
 | **v2.7.1** | 启动器补上模型权重自检 + 只读体检 `doctor` |
 | **v2.7.2** | 提准确率（补救预处理）+ 界面双主题，并整理待办清单 |
 | **v2.7.3** | 运行日志落盘（轮转 + 多进程分文件），修好界面「运行日志」面板 |
+| **v2.7.4** | 界面不再把默认引擎 `cascade` 悄悄换成 `cv`（准确率 10/11 → 0/11）；主题/引擎选择真正写回配置 |
 
 **待完善清单**见 [docs/ROADMAP.md](docs/ROADMAP.md)（按「用户可感知收益 ÷ 实现风险」排序）。

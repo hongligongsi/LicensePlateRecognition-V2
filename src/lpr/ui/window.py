@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..config import Config
-from ..engines import describe_engines
+from ..engines import describe_engine_choices
 from ..types import PlateColor, PlateResult
 from ..utils.image import imread, to_display_rgb
 from ..utils.logging_setup import (
@@ -422,6 +422,10 @@ class MainWindow(QMainWindow):
         self._last_roi_pixmap: QPixmap | None = None
         #: 「运行日志」面板上一次渲染的内容快照（判重用；比行数可靠）
         self._log_snapshot: list[str] = []
+        #: 最近一次引擎清单（``describe_engine_choices()`` 的结果）。
+        #: 缓存是为了别反复探测引擎可用性（``yolo`` 要查权重文件）；
+        #: 空列表表示"还没建过下拉框"，此时按需现算。
+        self._engine_infos: list[dict] = []
         #: 最近一次颜色徽章的状态 ``(key, label, muted)``：切主题后要重放
         #: （徽章的浅底胶囊用 rgba 半透明，底色深浅必须跟着主题走）
         self._badge_state: tuple[str, str | None, bool] | None = None
@@ -510,6 +514,22 @@ class MainWindow(QMainWindow):
         act_fit.triggered.connect(self._redraw_current_image)
         view.addAction(act_fit)
 
+    def _persist_config(self, what: str) -> None:
+        """把当前配置写回 ``config.json``（"下次启动沿用"的实际实现）。
+
+        写失败（文件只读 / 磁盘满 / 被杀软占用）只降级成一条警告 —— 为了
+        "记住一个偏好"把界面弄崩不值得，与日志落盘的取舍一致。
+
+        只在**用户主动切换**时调用。自动回落（配置里的引擎不可用）**不**落盘：
+        那会把用户写的值永久改掉，正是 v2.7.4 要消灭的行为。
+        """
+        try:
+            path = self.config.save()
+        except OSError as exc:
+            logger.warning("保存配置失败（%s 不会沿用）：%s", what, exc)
+            return
+        logger.info("已保存配置 → %s（%s 下次启动沿用）", path.absolute(), what)
+
     def on_theme_changed(self, name: str) -> None:
         """切换外观主题，并写回配置（下次启动沿用）。"""
         self._theme = set_theme(name)
@@ -526,6 +546,9 @@ class MainWindow(QMainWindow):
             act.setChecked(key == self._theme)
         self._refresh_statusbar()
         logger.info("切换外观主题 → %s", THEME_LABELS.get(self._theme, self._theme))
+        # v2.7.4：此前只改了内存（docstring 与 README 都写着"写回配置"，
+        # 实际重开界面又回到浅色 —— 声明了却没做的事，这里补上）
+        self._persist_config("外观主题")
 
     # ---------------------------------------------------------------- 界面
 
@@ -766,8 +789,9 @@ class MainWindow(QMainWindow):
     def _refresh_statusbar(self) -> None:
         # 引擎以下拉框实际选中项为准（与界面所见一致，而不是配置文件里
         # 可能已失效的默认值）
-        name = self.engine_combo.currentData() or self.config.engine.default
-        self._status_engine.setText(f"引擎：{name}")
+        info = self._current_engine_info()
+        name = (info or {}).get("display_name") or self.engine_combo.currentData()
+        self._status_engine.setText(f"引擎：{name or self.config.engine.default}")
         self._status_privacy.setText(
             "隐私：输出打码" if self.privacy.mask_output else "隐私：未打码"
         )
@@ -792,10 +816,22 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- 引擎
 
     def _refresh_engine_list(self) -> None:
+        """按引擎清单重建下拉框（**含** ``cascade`` 这类策略别名）。
+
+        别名之所以必须是个能选中的选项：``config.engine.default`` 允许写
+        ``cascade``（``config.ENGINE_CHOICES`` 里就有），而此前下拉框只列真引擎
+        （``describe_engines()``），配置里的 ``cascade`` 找不到对应项，于是被
+        当成"不可用"回落到第一项 —— 实测就是悄悄降级成 ``cv``，
+        11 张人工真值样张的命中从 10/11 掉到 0/11。
+        """
         self.engine_combo.blockSignals(True)
         self.engine_combo.clear()
-        infos = describe_engines()
-        default_idx = 0
+        infos = describe_engine_choices()
+        self._engine_infos = infos
+        # 兜底索引取**第一个可用项**，不能是硬编码的 0：第 0 项自己也可能
+        # 不可用（且已被置灰），``setCurrentIndex`` 并不理会 enabled 状态，
+        # 于是"回落"会落到一个禁用项上 —— 界面看着选中了它，实际跑不了。
+        default_idx = next((i for i, info in enumerate(infos) if info["available"]), 0)
         for i, info in enumerate(infos):
             label = info["display_name"]
             if not info["available"]:
@@ -813,26 +849,42 @@ class MainWindow(QMainWindow):
                 default_idx = i
         self.engine_combo.setCurrentIndex(default_idx)
         self.engine_combo.blockSignals(False)
-        # 配置的默认引擎不可用时会回落到第一项——把配置同步成实际选中的，
-        # 否则界面跑的引擎和 config.engine.default 各说各话（状态栏曾因此
-        # 显示 cascade、实际跑的是 cv）
+
+        # 走到这里说明配置写的引擎**真的**不可用（不是"别名没被列出"那种假警报）。
+        # 用 warning 级：这是用户能感知到的功能变化；文案要说清回落到谁、
+        # 以及配置文件本身没被改写，否则界面跑的引擎和 config 各说各话。
         selected = self.engine_combo.itemData(default_idx)
         if selected != self.config.engine.default:
-            logger.info(
-                "配置的默认引擎 %s 不可用，界面实际使用 %s", self.config.engine.default, selected
+            wanted = self.config.engine.default
+            reason = next((i["reason"] for i in infos if i["name"] == wanted), "")
+            logger.warning(
+                "配置的默认引擎 %s 不可用（%s），本次运行回落到 %s；config.json 未改动",
+                wanted,
+                reason or "未在引擎清单里",
+                selected,
             )
             self.config.engine.default = selected
         self._update_engine_hint()
         self._refresh_statusbar()
 
-    def _update_engine_hint(self) -> None:
+    def _current_engine_info(self) -> dict | None:
+        """当前下拉框选中项在引擎清单里的条目（找不到返回 ``None``）。"""
         name = self.engine_combo.currentData()
-        for info in describe_engines():
+        if not name:
+            return None
+        infos = getattr(self, "_engine_infos", None) or describe_engine_choices()
+        for info in infos:
             if info["name"] == name:
-                self.engine_hint.setText(
-                    info["description"] if info["available"] else f"不可用: {info['reason']}"
-                )
-                break
+                return info
+        return None
+
+    def _update_engine_hint(self) -> None:
+        info = self._current_engine_info()
+        if info is None:
+            return
+        self.engine_hint.setText(
+            info["description"] if info["available"] else f"不可用: {info['reason']}"
+        )
 
     def on_engine_changed(self) -> None:
         name = self.engine_combo.currentData()
@@ -842,6 +894,8 @@ class MainWindow(QMainWindow):
         self._update_engine_hint()
         self._refresh_statusbar()
         logger.info("切换引擎 → %s", name)
+        # 用户主动选的引擎要记住（自动回落走的是另一条路径，不落盘）
+        self._persist_config("默认引擎")
 
     # ---------------------------------------------------------------- 图片识别
 

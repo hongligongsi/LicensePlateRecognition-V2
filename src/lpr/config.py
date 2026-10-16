@@ -141,6 +141,18 @@ class LocateConfig:
 #: 一处就会出现"config 认、CLI 不认"的割裂。
 ENGINE_CHOICES = ("cv", "deep", "cascade", "yolo", "fusion")
 
+#: ``cascade`` 解析成**具体引擎**的尝试顺序：先 ``deep``（"CV 定位 → 纯识别
+#: 网络"的级联就是它的内在行为），deep 不可用再退 ``cv``。
+#:
+#: 与 ``ENGINE_CHOICES`` 一样是**单一事实来源**：``api.Recognizer._resolve_engine``
+#: 用它挑引擎，界面下拉框用它算 ``cascade`` 的可用性与"退化后会跑谁"。
+#: 两边各写一份的话，界面提示就会和运行时实际干的活分叉。
+#:
+#: 注意别和 ``api.CASCADE_ORDER = ("cv", "deep")`` 混淆：那是
+#: ``engine.mode = "cascade"`` 时**挑兜底引擎**的顺序（cv 优先，因为它快），
+#: 和"``cascade`` 这个引擎名等于谁"是两件事。
+CASCADE_RESOLVE_ORDER = ("deep", "cv")
+
 #: 可以作为**融合成员**的引擎：都是具体引擎，不含别名与 ``fusion`` 自己
 FUSION_MEMBER_CHOICES = ("cv", "deep", "yolo")
 #: 融合引擎的策略

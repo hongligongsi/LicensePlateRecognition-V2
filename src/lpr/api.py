@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from .batch import parallel_is_worthwhile, run_parallel
-from .config import Config
+from .config import CASCADE_RESOLVE_ORDER, Config
 from .engines import INFERENCE_LOCK, describe_engines, get_engine
 from .engines.base import BaseEngine, EngineUnavailable
 from .plate_rules import describe as describe_plate
@@ -51,7 +51,11 @@ from .utils.security import (
 
 logger = get_logger("api")
 
-#: 引擎级联顺序：需要"又快又准"时，先用 cv 快速筛，deep 负责精确识别
+#: **跨引擎兜底**顺序（``engine.mode == "cascade"`` 时用）：主引擎没命中时先用
+#: cv 快速兜一次，再考虑 deep。
+#:
+#: 别和 ``config.CASCADE_RESOLVE_ORDER`` 混淆：那个回答的是"``engine.default``
+#: 里的 ``cascade`` 到底指哪个引擎"（deep 优先），与这里"挑谁做兜底"无关。
 CASCADE_ORDER = ("cv", "deep")
 
 
@@ -296,19 +300,19 @@ class Recognizer:
         """
         infos = Recognizer._available_map()
         if requested == "auto":
-            for name in ("deep", "cv"):
+            for name in CASCADE_RESOLVE_ORDER:  # ("deep", "cv")，同 cascade 的偏好
                 if infos.get(name, {}).get("available"):
                     return name
             raise EngineUnavailable(
                 "没有可用的识别引擎，请安装 opencv-python 或 rapidocr-onnxruntime"
             )
         if requested == "cascade":
-            # 级联模式以 deep 为最终识别者，cv 只做定位
-            if infos.get("deep", {}).get("available"):
-                return "deep"
-            if infos.get("cv", {}).get("available"):
-                return "cv"
-            raise EngineUnavailable("没有可用的识别引擎")
+            # 级联模式以 deep 为最终识别者，cv 只做定位（顺序见
+            # config.CASCADE_RESOLVE_ORDER —— 界面下拉框算可用性时读的是同一份）
+            for name in CASCADE_RESOLVE_ORDER:
+                if infos.get(name, {}).get("available"):
+                    return name
+            raise EngineUnavailable("没有可用的识别引擎（cascade 需要 deep 或 cv）")
         return requested
 
     @property

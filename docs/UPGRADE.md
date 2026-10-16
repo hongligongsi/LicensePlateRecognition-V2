@@ -2582,3 +2582,187 @@ E  ImportError: libEGL.so.1: cannot open shared object file
   本次一并补齐（两个 Release 都建了）。
 * 注意 **`v2.7.3` tag 指向 `2cf1076`**，不含之后那三个"测试 / 数据 / CI"性质的提交 ——
   发出去的**代码**与 tag 内容一致，后面动的只有测试、CI 配置与样张数据。
+
+---
+
+# v2.7.4 —— 界面把默认引擎悄悄换掉了（`cascade` → `cv`）
+
+这次是从界面「运行日志」面板里的一条记录查起的：
+
+```
+19:53:05 [INFO] lpr.ui.window: 配置的默认引擎 cascade 不可用，界面实际使用 cv
+```
+
+先给结论：这句话**两处都错**，而且它掩盖了一次真实的准确率退化。
+
+## 一、这句话错在哪
+
+### 1.1 `cascade` 不是"不可用"，它是 `deep` 的别名
+
+`config.ENGINE_CHOICES` 允许五个取值：`cv` / `deep` / `cascade` / `yolo` / `fusion`。
+但引擎注册表（`engines/registry.py` 的 `_REGISTRY`）里**只有四个真引擎**：
+
+```
+已注册引擎: ['cv', 'deep', 'fusion', 'yolo']
+get_engine("cascade") -> KeyError: 未知引擎 'cascade'，可用: cv, deep, fusion, yolo
+```
+
+`cascade` 是"用哪个引擎"的**规则**（`Recognizer._resolve_engine` 把它解析成
+`deep`，因为 deep 内部本就是"CV 定位 → 纯识别网络"的级联），不是一类实现。
+所以它**不该**被注册 —— 真注册了，`FusionEngine` 的成员过滤
+（`NON_MEMBER_NAMES = {fusion, cascade, auto}`）会把别名当成可投票成员。
+
+问题在于：界面下拉框是用 `describe_engines()` 填的，而它遍历的正是 `_REGISTRY`，
+于是 `cascade` **不是不可用，是压根不在选项里**。而 `_refresh_engine_list` 找默认项的
+写法是：
+
+```python
+elif info["name"] == self.config.engine.default:   # config 写的是 "cascade"
+    default_idx = i                                 # 永远匹配不到
+```
+
+匹配不到 → `default_idx` 保持初始值 `0` → 选中第一项 `cv`。接着还顺手把配置改了：
+
+```python
+if selected != self.config.engine.default:
+    logger.info("配置的默认引擎 %s 不可用，界面实际使用 %s", ...)
+    self.config.engine.default = selected      # cascade → cv，静默
+```
+
+### 1.2 代价：11 张人工真值样张的命中从 10/11 掉到 0/11
+
+用 `tests/baselines/ground_truth.json`（唯一带人工真值的 11 张）实测三种引擎：
+
+| 引擎 | 解析成 | 命中 | 加载耗时 |
+|---|---|---|---|
+| `cv` | `cv` | **0 / 11** | 159ms |
+| `cascade` | `deep` | **10 / 11** | 1ms |
+| `deep` | `deep` | 10 / 11 | 2ms |
+
+也就是说：配置里写着 `cascade`（= deep），界面每次启动都悄悄换成 `cv`，
+**准确率从 90% 变成 0%**。逐张看更直观（真值 vs 界面实际读出的）：
+
+```
+img/single_blue.jpg     真值=辽DU4356    cv=渝J1151Z      cascade=辽DU4356
+img/police.jpg          真值=鄂F8888警   cv=赣EE888Z      cascade=鄂F8888警
+img/xue.jpg             真值=琼A6716学   cv=川J117SS      cascade=琼A6716学
+samples/2.jpg           真值=京AD77972   cv=黑J11111      cascade=京AD77972
+```
+
+`cv` 的 SVM 对任何输入都输出置信度 1.0，读数全是"合法但不对"的号码 ——
+这正是 [ACCURACY.md](ACCURACY.md) 里记录过的过自信问题，一个**看起来像正常工作**的
+错误答案，比报错更难发现。
+
+这条日志是 `INFO` 级、只在界面里出现、且被后续的正常运行掩盖，所以从 v2.3.1
+（`cascade` 被定为默认引擎）起一直存在，直到有人去翻运行日志才暴露。
+
+## 二、改了什么
+
+### 2.1 单一事实来源：`config.CASCADE_RESOLVE_ORDER`
+
+```python
+CASCADE_RESOLVE_ORDER = ("deep", "cv")
+```
+
+`api.Recognizer._resolve_engine` 里 `auto` 与 `cascade` 两个分支原先各写一份
+`("deep", "cv")`，现在都读这个常量。界面算 `cascade` 可用性时读的也是它 ——
+"界面说会跑谁"与"运行时真的跑谁"从此不可能分叉。
+
+（别与 `api.CASCADE_ORDER = ("cv", "deep")` 混淆：那是 `engine.mode="cascade"`
+时挑**兜底**引擎的顺序，与"`cascade` 这个引擎名等于谁"是两件事，注释里写明了。）
+
+### 2.2 `describe_engine_choices()`：真引擎 + 策略别名
+
+```python
+ALIAS_ENGINES = {
+    "cascade": {
+        "display_name": "级联引擎",
+        "description": "CV 快速定位 → 深度精确识别（等同 deep 引擎）",
+        "resolve_order": CASCADE_RESOLVE_ORDER,
+        "anchor": CASCADE_RESOLVE_ORDER[0],   # 紧跟 deep，而不是按字母序落地
+    },
+}
+```
+
+`describe_engine_choices()` 在 `describe_engines()` 的结果里插入别名行（`strategy: True`），
+可用性取自它解析出的引擎。三处行为：
+
+| 情况 | `available` | `description` |
+|---|---|---|
+| deep 可用 | `True` | 原文 |
+| deep 不可用、cv 可用 | `True` | 追加「；deep 不可用，本次退化为 CV」 |
+| 两者都不可用 | `False` | `reason` 里两个都点名 |
+
+第二条尤其重要：界面提示语直接读 `description`，不写明退化就会让用户以为跑的仍是 deep。
+
+### 2.3 界面
+
+* 下拉框改用 `describe_engine_choices()`，`cascade` 成为可选中项，位置紧跟「深度学习引擎」；
+* **不再静默改写配置**：选中项与配置一致时不碰 `config.engine.default`；
+* 真遇到不可用引擎（例如 `yolo` 没放权重）仍会回落，但日志从 `INFO` 升为 `WARNING`，
+  内容写明**原因**与**回落目标**，并注明 `config.json 未改动`；
+* 状态栏改显示中文展示名（「引擎：级联引擎」），此前显示内部名 `cascade`。
+
+### 2.4 顺手修掉的一个隐藏 bug
+
+写测试时发现：`default_idx` 初始值是硬编码的 `0`，而**第 0 项自己也可能不可用**
+（且已被置灰）。`QComboBox.setCurrentIndex` 并不理会单项的 enabled 状态，
+于是"回落"会把一个禁用项选成当前项 —— 界面看着选好了，实际跑不了。
+
+现在兜底索引取**第一个可用项**：
+
+```python
+default_idx = next((i for i, info in enumerate(infos) if info["available"]), 0)
+```
+
+### 2.5 `lpr engines` 也能回答这个问题了
+
+原先它只列真引擎，"我在 config 里写的 `cascade` 到底行不行"没人回答。现在：
+
+```
+传统 CV 引擎         可用       ...
+深度学习引擎           可用       ...
+级联引擎*            可用       CV 快速定位 → 深度精确识别（等同 deep 引擎）
+三合一引擎            可用       ...
+检测识别引擎           可用       ...
+
+* 策略名：非独立引擎实现，运行时按说明里的顺序解析成具体引擎。
+当前 config.json 的 engine.default = cascade → 可用
+```
+
+## 三、顺手修掉的：主题/引擎选择根本没落盘
+
+查这条日志时发现 `on_theme_changed` 的 docstring 与 README §6.1 都写着"选择写回
+`config.json`，下次启动沿用"，但代码只改了 `self.config.ui.theme`（内存）——
+实测切到深色后 `config.json` 一个字节都没变，重开界面又回到浅色。`Config.save()`
+此前只有 CLI 的 `config` 子命令在调。
+
+补上一个 `_persist_config(what)`，写失败只降级为警告（与日志落盘同一个取舍：
+为了记住一个偏好把界面弄崩不值得）。同时**刻意区分两条路径**：
+
+* **用户主动切换**（点主题、点引擎下拉框）→ 写回 `config.json`；
+* **自动回落**（配置里的引擎不可用）→ **只改内存，绝不落盘**。
+
+后者是这次修复的核心：原先那个"静默改写"如果发生在主题落盘之后，就会把用户的
+`cascade` **永久**改成 `cv` —— 从"本次运行跑错"升级成"以后每次都跑错"。
+
+## 四、验证
+
+* 新增 `tests/test_engine_choices.py` **22 项**，分四组：
+  * `TestAliasCatalog`（9）：别名仍不进注册表（`get_engine("cascade")` 仍 `KeyError`）、
+    位置紧跟 deep、可用性跟随解析结果、退化时说明写明、界面用的顺序与
+    `Recognizer._resolve_engine` 一致、别名表引用的是同一个常量；
+  * `TestGuiEngineCombo`（7）：**核心回归** —— 配置写 `cascade` 时下拉框选中它
+    且配置不被改写、不再打假警报、状态栏显示中文名、切引擎后状态栏跟进、
+    真不可用时 warning 里含原因与退回目标、回落目标必须是可用项；
+  * `TestCliEngines`（2）：`lpr engines` 含别名与脚注、能报出当前默认值；
+  * `TestConfigPersistence`（3）：主题与引擎选择**确实写回文件**、自动回落
+    **一个字都不写**。
+* 写测试时踩到一个坑值得记：界面开始落盘后，`test_switching_engine_updates_statusbar`
+  一次 `setCurrentIndex` 就把**仓库的** `config.json` 重写了（引擎被改成 `deep`、
+  文件里多出 40 行默认值）。于是把"把 `Config.save()` 目标挪到临时目录"提到
+  **fixture 层**（`config_path`），所有建窗口的用例自动隔离，而不是逐个记得加。
+* 全局静态检查：`ruff check` / `ruff format --check` / `mypy` 全绿。
+* 实机验证：界面下拉框 5 项、默认选中 `cascade`、`config.engine.default` 保持
+  `cascade` 不变；`lpr engines` 输出如上；`lpr predict` 走 `cascade` 结果不变。
+

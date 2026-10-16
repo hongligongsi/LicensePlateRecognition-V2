@@ -12,10 +12,12 @@ from .cv_engine import CVEngine
 from .deep_engine import DeepEngine
 from .fusion_engine import FusionEngine
 from .registry import (
+    ALIAS_ENGINES,
     INFERENCE_LOCK,
     available_engines,
     clear_instances,
     create_engine,
+    describe_engine_choices,
     describe_engines,
     get_engine,
     register_engine,
@@ -28,6 +30,7 @@ register_engine(YoloEngine)
 register_engine(FusionEngine)
 
 __all__ = [
+    "ALIAS_ENGINES",
     "INFERENCE_LOCK",
     "BaseEngine",
     "CVEngine",
@@ -38,6 +41,7 @@ __all__ = [
     "available_engines",
     "clear_instances",
     "create_engine",
+    "describe_engine_choices",
     "describe_engines",
     "get_engine",
     "register_engine",

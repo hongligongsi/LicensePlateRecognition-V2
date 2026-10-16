@@ -12,7 +12,7 @@ import threading
 from dataclasses import asdict
 from typing import Any
 
-from ..config import EngineConfig
+from ..config import CASCADE_RESOLVE_ORDER, EngineConfig
 from .base import BaseEngine
 
 #: 推理串行锁。
@@ -63,6 +63,81 @@ def describe_engines() -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+#: **策略别名**：能从 ``--engine`` 与 ``config.engine.default`` 传进来，但
+#: **不是**注册表里的具体引擎。
+#:
+#: 为什么不给它注册一个同名引擎类：
+#:
+#: * ``cascade`` 不是一类实现，而是"用哪个引擎"的规则 —— ``get_engine("cascade")``
+#:   本来就无处可查，解析发生在 ``Recognizer._resolve_engine``；
+#: * ``FusionEngine`` 的成员过滤（``NON_MEMBER_NAMES`` 里含 ``cascade`` / ``auto``）
+#:   正依赖"``cascade`` 不是引擎名"这个事实，真注册一个同名引擎会让别名被当成
+#:   融合成员。
+#:
+#: 但它对使用者是**合法取值**（``config.ENGINE_CHOICES`` 里就有），所以界面下拉框
+#: 必须能选中它。此前下拉框只列 ``describe_engines()``（纯真引擎），配置里的
+#: ``cascade`` 找不到对应项，被当成"不可用"静默降级成第一项 ``cv`` ——
+#: 实测代价：11 张人工真值样张的命中从 10/11 掉到 0/11。
+ALIAS_ENGINES: dict[str, dict[str, Any]] = {
+    "cascade": {
+        "display_name": "级联引擎",
+        "description": "CV 快速定位 → 深度精确识别（等同 deep 引擎）",
+        # 引用 config 的同一常量：界面说"cascade 会退化成谁"与运行时真的
+        # 退化成谁，必须是同一份知识
+        "resolve_order": CASCADE_RESOLVE_ORDER,
+        # 别名在下拉框里紧跟它实际使用的引擎（deep），而不是按字母序落到最后
+        "anchor": CASCADE_RESOLVE_ORDER[0],
+    },
+}
+
+
+def describe_engine_choices() -> list[dict[str, Any]]:
+    """引擎清单**含策略别名**，供界面下拉框与 CLI 引擎表渲染。
+
+    与 :func:`describe_engines` 的唯一区别：把 ``cascade`` 这类别名也列出来，
+    并排在它实际使用的引擎之后。别名的可用性取自它解析出的引擎 ——
+    ``cascade`` 在 ``deep`` 不可用时会退化成纯 ``cv``，此时仍算可用，
+    但 ``description`` 会写明退化，免得界面提示与实际跑的引擎不一致。
+
+    真引擎那一段与 :func:`describe_engines` 完全同源，不做任何改写。
+    """
+    rows = describe_engines()
+    by_name = {row["name"]: row for row in rows}
+    for alias, meta in ALIAS_ENGINES.items():
+        order: tuple[str, ...] = meta["resolve_order"]
+        picked = next((n for n in order if by_name.get(n, {}).get("available")), None)
+        if picked is None:
+            entry: dict[str, Any] = {
+                "name": alias,
+                "display_name": meta["display_name"],
+                "description": meta["description"],
+                "available": False,
+                "reason": "、".join(
+                    f"{n} 不可用（{by_name.get(n, {}).get('reason') or '未注册'}）" for n in order
+                ),
+                "strategy": True,
+            }
+        else:
+            description = meta["description"]
+            if picked != order[0]:
+                # 退化要写在 description 里：界面提示读的就是这个字段，
+                # 只说"可用"会让用户以为跑的还是 deep
+                description = f"{description}；{order[0]} 不可用，本次退化为 {picked.upper()}"
+            entry = {
+                "name": alias,
+                "display_name": meta["display_name"],
+                "description": description,
+                "available": True,
+                "reason": "",
+                "strategy": True,
+            }
+        anchor_name = meta.get("anchor", picked)
+        anchor = by_name.get(anchor_name)
+        index = rows.index(anchor) + 1 if anchor is not None else len(rows)
+        rows.insert(index, entry)
+    return rows
 
 
 def create_engine(name: str, config: EngineConfig | None = None, **kwargs: Any) -> BaseEngine:
