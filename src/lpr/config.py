@@ -230,6 +230,14 @@ class EngineConfig:
     #: ``chain`` 的"够可信"门槛：某成员给出 ``confidence >= 该值`` 的读数就停，
     #: 不再试后面的成员。
     fusion_chain_accept: float = 0.75
+    #: ``auto`` 的"够可信"判定之外唯一的可调项：**图像清晰且够大时**先试哪个成员。
+    #: 小图/糊图固定检测网络（``yolo``）优先，不归它管。
+    #:
+    #: 默认 ``"deep"``。为什么留成配置而不是写死：两套实测数据指向相反 ——
+    #: CCPD 常规牌上 yolo 更强（84% vs deep 79%），而特殊牌（港/警/领/学/双层）
+    #: 自有样张上 deep 全对（10/10 vs yolo 8/10）。写死任何一边都会在另一边
+    #: 付出代价，见 ``docs/ACCURACY.md``。
+    fusion_auto_clear_first: str = "deep"
     #: 融合结果要留下所需的**最少一致成员数**（``ensemble`` 用）。
     #: 默认 2 = 至少两个成员一致才留（或票权达到 ``fusion_trusted_weight``
     #: 的成员独存）。
@@ -297,6 +305,11 @@ class EngineConfig:
             raise ValueError(f"fusion_min_support 至少为 1，当前 {self.fusion_min_support}")
         if self.fusion_trusted_weight < 0:
             raise ValueError(f"fusion_trusted_weight 不能为负，当前 {self.fusion_trusted_weight}")
+        if self.fusion_auto_clear_first not in FUSION_MEMBER_CHOICES:
+            raise ValueError(
+                f"未知 fusion_auto_clear_first: {self.fusion_auto_clear_first!r}"
+                f"（可选: {', '.join(FUSION_MEMBER_CHOICES)}）"
+            )
 
 
 @dataclass

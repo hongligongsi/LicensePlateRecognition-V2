@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.6.0（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.7.0（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -40,6 +40,10 @@
 > **v2.6.0 新增第四个引擎 `fusion`（三合一）**：把 `cv` / `deep` / `yolo`
 > 编排成一个引擎，三种策略（并联投票融合 / 顺序兜底链 / 特征选优）配置切换，
 > 成员缺权重自动退席，融合结果带各成员读数与票数明细。
+> **v2.7.0 补上准确率实测**：100 张 CCPD + 10 张自有样张，六个配置横向对比、
+> 失败按环节拆解、两项附加实验 —— 结论见
+> [docs/ACCURACY.md](docs/ACCURACY.md)（简版：没有全能引擎；融合目前不提升
+> 识别率；`auto` 的硬编码偏好已在 CCPD 上倒退 4 张，已改为可配置）。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -55,7 +59,9 @@
       组内按 `引擎权重 × 置信度` 投票，票高者胜出；结果里带 `meta["fusion"]`
       写明每个成员读了什么（谁是少数派一目了然）
     - `chain` **顺序兜底链** —— 依次尝试，拿到 `confidence ≥ 0.75` 的结果就停（省时）
-    - `auto` **特征选优** —— 按长边分辨率与模糊度排序后按序试（小图/糊图先上检测网络）
+    - `auto` **特征选优** —— 按长边分辨率与模糊度排序后按序试（小图/糊图先上检测网络），
+      清晰大图的首选成员可配置（`engine.fusion_auto_clear_first`，默认 `deep`；
+      实测依据见 [docs/ACCURACY.md §5.2](docs/ACCURACY.md)）
     成员缺权重或缺依赖会**自动退席**（少一票，不影响其余成员）；
     默认还带一条**准入规则**：孤立候选要凑到第二个成员的票才留，或票权达到 1.0
     才能独存 —— 因为实测 `cv` 在 4096×2304 的真实样张上会给 9 条候选（7 条误检），
@@ -448,7 +454,8 @@ src/lpr/
 │   ├── svm_classifier.py  # SVM 字符分类（兼容原版模型 + 置信度）
 │   ├── cv_engine.py    # 传统 CV 引擎
 │   ├── deep_engine.py  # 深度学习引擎（定位引导 + 纯识别加速 + 双行牌）
-│   └── yolo_engine.py  # 检测识别引擎（bbox + 四角点 + 单/双层，ONNX，待补权重）
+│   ├── yolo_engine.py  # 检测识别引擎（bbox + 四角点 + 单/双层，ONNX）
+│   └── fusion_engine.py  # 三合一引擎（并联投票 / 顺序兜底链 / 特征选优）
 ├── ui/
 │   ├── window.py       # PySide6 主窗口（已接入安全层）
 │   └── worker.py       # 采集与识别分离的线程（CameraWorker + _RecognizeThread）
@@ -463,6 +470,8 @@ tools/
 ├── bench_workers.py          # 多进程批量加速基准（含纯 CPU 并行对照）
 ├── eval_locate.py            # 定位客观评测 + 网格搜索（支持 --save-baseline/--baseline）
 ├── eval_weak.py              # 无标注真实图的弱监督评测（合法率/候选率，支持 --override 调参对照）
+├── eval_ccpd.py              # 多引擎准确率评测（识别+定位、失败按环节分类，--engines/fusion:策略）
+├── eval_report.py            # 把 eval_ccpd 的 JSON 排成 markdown 表（总览/分子集/失败分类/互补性）
 ├── tune_thresholds.py        # 无监督阈值调参（没有标注时的退路）
 ├── tune_io.py                # 调参结果落盘（写进 engine.locate，自动备份）
 ├── fetch_ccpd.py             # 稳健下载 CCPD 样张
@@ -478,9 +487,10 @@ models/                 # 预训练 SVM 模型（原版权重，config.json 内�
 models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 1018 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 1077 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
+docs/ACCURACY.md        # 准确率实测与提升路线（v2.7.0）
 docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 ```
 
@@ -488,7 +498,7 @@ docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 1018 项单元/集成测试
+pytest tests/ -q                                    # 1077 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -527,15 +537,27 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
   实测 `samples/1.jpg`（4096×2304，两块车牌）约 **2.2 s/张**，而单引擎
   `yolo` ≈ 0.9 s、`deep` ≈ 0.8 s。它换的是**精度与召回**，不是速度；
   要快就用 `chain`（命中即停）或 `auto`（单引擎）
+- **`fusion` 目前不提升识别率（v2.7.0 实测）**：100 张 CCPD 上三种策略的严格命中
+  都等于最强单成员（`yolo` 84%），因为 `deep` 的命中集合是 `yolo` 的**子集** ——
+  成员之间没有互补，融合救不回任何图。它的实测价值是**更少的误检**
+  （ensemble 5 条 vs yolo 7 / deep 14 / cv 691）。详见
+  [docs/ACCURACY.md §6](docs/ACCURACY.md)
 - **`fusion` 的 `auto` 策略本质是单引擎**：它只按图像特征挑一个跑。实测
   `samples/1.jpg` 是"大图 + 清晰"，按规则选了 `deep`，结果只报出 **1 块**
   车牌（远景那块小牌漏了），而 `yolo` 能报出 2 块 —— 所以**要召回就别用 auto**。
-  这是如实记录，不是"自动选优一定更好"
+  v2.7.0 起清晰大图的首选成员可配置（`engine.fusion_auto_clear_first`，
+  默认 `deep` 行为不变）：CCPD 上切到 `yolo` 实测 80%→84%（+4 张）；
+  特殊牌（港/警/领/学/双层）自有样张上 `deep` 10/10 而 `yolo` 8/10，
+  **两套数据指向相反，所以留成配置而不是写死** —— 依据见
+  [docs/ACCURACY.md §5.2](docs/ACCURACY.md)
 - **`fusion` 的准入规则会丢候选，且丢的是"低票孤立结果"**：默认要求"至少两个
   成员一致"或"票权 ≥ 1.0 的成员独存"。实测这条规则把 `cv` 在真实大图上的
   6~7 条孤立误检滤掉了（`samples/1.jpg`：融合前 9 条噪声 → 融合后 2 条全对）。
   被滤掉的候选不是静默丢弃：`FusionEngine.last_dropped` 里能查到，
   日志也会列出号码。想取并集（最大召回）把 `engine.fusion_min_support` 设成 1
+- **第二识别模型（低置信交叉验证）默认关闭，实测也应保持关闭**：100 张 CCPD 上
+  开启后严格命中一張未变（失败集合逐张相同），`deep` 耗时却 ×2.9
+  （716→2042 ms）。详见 [docs/ACCURACY.md §5.1](docs/ACCURACY.md)
 - **Python API 的 `engine` 参数默认是 `"auto"`，不读 `config.engine.default`**：
   想让 API 也用配置里的默认引擎（例如 `fusion`），要显式传
   `Recognizer(engine=config.engine.default)`；CLI 与 GUI 都是显式传的，不受影响

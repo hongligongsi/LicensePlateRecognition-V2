@@ -77,6 +77,54 @@ TILTED_CORNERS = [(386, 473), (177, 454), (154, 383), (363, 402)]
 #: 双层牌形状：宽 200、高 100 → 比值 0.5
 DOUBLE_CORNERS = [(200, 100), (0, 100), (0, 0), (200, 0)]
 
+#: 新版导出的真实文件名（``datasets/ccpd_labeled/_labels.json`` 里的 ``orig``）。
+#: 与老格式的三处差别：坐标用 ``,`` 分隔、面积是长整数、模糊度带 ``_ccpd_base_*`` 尾巴。
+NEW_FORMAT_NAME = (
+    "0189655172414-91_85-233,591_457,681"
+    "-463,678_245,663_232,585_450,600-0_3_15_27_28_29_30-134-129_ccpd_base_005128.jpg"
+)
+
+
+class TestCommaSeparatorFormat:
+    """新版导出用 ``,`` 当坐标分隔符。
+
+    这是真踩过的坑：``parse`` 早先只认 ``&``，于是对**整个新格式数据集**
+    静默返回 ``None`` —— 评测脚本拿到 0/100 的解析率而不报错。所以这里既测
+    "两种写法等价"，也测"逗号格式下的 bbox 真的取到了值"。
+    """
+
+    def test_comma_format_parses(self):
+        ann = parse(NEW_FORMAT_NAME)
+        assert ann is not None
+
+    def test_comma_and_ampersand_forms_agree(self):
+        pts = [(386, 473), (177, 454), (154, 383), (363, 402)]
+        old = parse(make_ccpd_name(pts))
+        new = parse(make_ccpd_name(pts).replace("&", ","))
+        assert old is not None and new is not None
+        assert old.bbox == new.bbox
+        assert old.corners == new.corners
+
+    def test_bbox_is_split_on_comma(self):
+        ann = parse(NEW_FORMAT_NAME)
+        assert ann is not None
+        assert ann.bbox == (233, 591, 457, 681)
+
+    def test_corners_are_split_on_comma(self):
+        ann = parse(NEW_FORMAT_NAME)
+        assert ann is not None
+        assert ann.corners == [(463, 678), (245, 663), (232, 585), (450, 600)]
+
+    def test_trailing_suffix_on_blur_field_does_not_break_parsing(self):
+        """模糊度字段是 ``129_ccpd_base_005128`` —— 必须只取前导整数。"""
+        ann = parse(NEW_FORMAT_NAME)
+        assert ann is not None
+        assert ann.blurriness == 129
+        assert ann.brightness == 134
+
+    def test_unknown_separator_is_rejected_not_silently_misparsed(self):
+        assert parse(NEW_FORMAT_NAME.replace(",", ":")) is None
+
 
 class TestCornerOrdering:
     """四角点顺序 —— 错了不报错，只毁模型。"""

@@ -146,7 +146,28 @@ class TestSelectSingleEngine:
     def test_large_sharp_image_prefers_deep(self):
         pick, why = select_single_engine(sharp_image((1000, 1400)), ("yolo", "deep", "cv"))
         assert pick == "deep"
-        assert "深度学习" in why
+        assert "清晰且够大" in why
+        assert "deep" in why
+
+    def test_clear_first_is_honoured_when_it_is_a_member(self):
+        """CCPD 实测：清晰大图首选 yolo 能比默认多救 4 张（docs/ACCURACY.md）。"""
+        pick, why = select_single_engine(
+            sharp_image((1000, 1400)), ("yolo", "deep", "cv"), clear_first="yolo"
+        )
+        assert pick == "yolo"
+        assert "yolo" in why
+
+    def test_clear_first_outside_members_falls_back_to_member_order(self):
+        """配置的 clear_first 不在岗时，不强插一个不存在的成员。"""
+        pick, _ = select_single_engine(
+            sharp_image((1000, 1400)), ("deep", "cv"), clear_first="yolo"
+        )
+        assert pick == "deep"
+
+    def test_non_detector_members_respect_member_order_when_blurry(self):
+        """糊图要检测网络优先；成员里没有检测网络时保持配置顺序，不乱跳。"""
+        pick, _ = select_single_engine(blurry_image((1000, 1200)), ("cv", "deep"))
+        assert pick == "cv"
 
     def test_only_available_members_are_considered(self):
         """``deep`` 缺席时，大图清晰场景要顺延给 yolo 而不是挑一个没在岗的。"""
@@ -528,6 +549,18 @@ class TestAutoStrategy:
         engine = build(members, strategy=STRATEGY_AUTO)
         assert engine.predict(sharp_image((240, 320))) == []
 
+    def test_clear_first_config_flips_the_routing_on_clear_images(self):
+        """``fusion_auto_clear_first`` 是唯一能让清晰大图不走 deep 的开关。"""
+        members = {
+            "yolo": FakeMember("yolo", [res("yolo", "京A12345")]),
+            "deep": FakeMember("deep", [res("deep", "沪B67890")]),
+        }
+        engine = build(members, strategy=STRATEGY_AUTO, clear_first="yolo")
+        out = engine.predict(sharp_image((1000, 1400)))
+        assert out[0].text == "京A12345"
+        assert members["deep"].calls == 0
+        assert out[0].meta["fusion"]["decided"] == "yolo"
+
 
 # --------------------------------------------------------------------- 生命周期
 
@@ -649,6 +682,7 @@ class TestRegistrationAndConfig:
             fusion_chain_accept=0.8,
             fusion_min_support=1,
             fusion_trusted_weight=0.9,
+            fusion_auto_clear_first="yolo",
         )
         engine = create_engine("fusion", cfg)
         assert engine.strategy == "chain"
@@ -658,6 +692,7 @@ class TestRegistrationAndConfig:
         assert engine.chain_accept == pytest.approx(0.8)
         assert engine.min_support == 1
         assert engine.trusted_weight == pytest.approx(0.9)
+        assert engine.clear_first == "yolo"
 
     def test_explicit_kwargs_override_config(self):
         cfg = EngineConfig(fusion_strategy="ensemble", fusion_members=("deep",))
@@ -678,6 +713,8 @@ class TestRegistrationAndConfig:
             ({"fusion_chain_accept": 1.5}, "fusion_chain_accept"),
             ({"fusion_min_support": 0}, "fusion_min_support"),
             ({"fusion_trusted_weight": -1.0}, "fusion_trusted_weight"),
+            ({"fusion_auto_clear_first": "bogus"}, "fusion_auto_clear_first"),
+            ({"fusion_auto_clear_first": "fusion"}, "fusion_auto_clear_first"),
         ],
     )
     def test_invalid_config_is_rejected(self, kwargs, field):

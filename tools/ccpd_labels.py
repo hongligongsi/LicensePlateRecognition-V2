@@ -13,6 +13,10 @@
     │   └ 水平/垂直倾角
     └ 车牌面积占比
 
+**坐标分隔符有两种写法**：老版导出用 ``&``（``154&383_386&473``），
+新版导出用 ``,``（``233,591_457,681``）。两者语义相同，:func:`parse`
+**都认** —— 早先只认 ``&``，导致对整个新格式数据集解析全部返回 ``None``。
+
 **形态 B：ModelScope 镜像** —— 文件名被重写成 ``sample_N.jpg``，标注丢失。
 此时只能做**无监督**评估（靠定位算法自身切出车牌，再用一致性指标打分），
 见 :func:`crop_by_detection`。
@@ -147,6 +151,19 @@ def has_labels(directory: str | Path) -> bool:
     return False
 
 
+def _split_point(token: str) -> tuple[int, int]:
+    """解析 ``x&y`` 或 ``x,y`` 形式的坐标点。
+
+    CCPD 的新旧导出用不同的分隔符，两种都得认（只认 ``&`` 时，
+    新格式数据集会整批解析失败）。
+    """
+    for sep in ("&", ","):
+        if sep in token:
+            x, y = token.split(sep, 1)
+            return int(x), int(y)
+    raise ValueError(f"无法解析坐标点: {token!r}")
+
+
 def parse(name: str | Path) -> CcpdAnnotation | None:
     """从文件名解析标注，格式不符返回 ``None``。"""
     path = Path(name)
@@ -160,17 +177,15 @@ def parse(name: str | Path) -> CcpdAnnotation | None:
         tilt = (int(tilt_part[0]), int(tilt_part[1])) if len(tilt_part) >= 2 else (0, 0)
 
         lt, rb = parts[2].split("_")
-        x1, y1 = (int(v) for v in lt.split("&"))
-        x2, y2 = (int(v) for v in rb.split("&"))
+        x1, y1 = _split_point(lt)
+        x2, y2 = _split_point(rb)
 
-        corners = []
-        for pt in parts[3].split("_"):
-            cx, cy = pt.split("&")
-            corners.append((int(cx), int(cy)))
+        corners = [_split_point(pt) for pt in parts[3].split("_")]
 
         text = _decode_plate(parts[4])
         brightness = int(parts[5])
-        blurriness = int(parts[6])
+        # 模糊度字段后面可能挂着 "_ccpd_base_005128" 之类的来源后缀，取首段
+        blurriness = int(parts[6].split("_")[0])
     except (ValueError, IndexError):
         return None
 

@@ -82,6 +82,12 @@ AUTO_BLUR_THRESHOLD = 60.0
 #: 算模糊度时先把图缩到这一长边，避免 4K 图上做 Laplacian 白等
 AUTO_BLUR_PROBE_SIDE = 640
 
+#: 视作"检测网络"的成员（``auto`` 在小图/糊图上把它们提到最前）。
+#: ``deep`` 是"CV 定位引导 OCR"，``cv`` 是轮廓法，都算不上全局语义检测器。
+DETECTOR_MEMBERS = frozenset({"yolo"})
+#: ``auto`` 在清晰大图上的默认首选（与 ``EngineConfig.fusion_auto_clear_first`` 一致）
+DEFAULT_CLEAR_FIRST = "deep"
+
 #: 融合引擎自己的名字（成员里不允许出现它，否则递归）
 SELF_NAME = "fusion"
 #: 策略别名，不是具体引擎，不能当成员
@@ -115,17 +121,29 @@ def blur_score(image: np.ndarray) -> float:
 def select_single_engine(
     image: np.ndarray,
     members: tuple[str, ...] | list[str],
+    clear_first: str = "deep",
 ) -> tuple[str, str]:
     """``auto`` 策略的排序器：按图像特征把成员排成一个"优先尝试顺序"。
 
-    规则是有意写得简单可解释的（阈值都是显式常量，不玩玄学）：
+    规则有意写得简单可解释（阈值都是显式常量，不玩玄学）：
 
     * **小图或糊图** → 检测网络优先。车牌只占几个像素、或边缘已经糊掉时，
-      轮廓法与 OCR 都容易失效，而检测网络是靠全局语义找车牌的。
-    * **较大且清晰的图** → ``deep`` 优先（定位引导 OCR，速度与精度平衡最好）。
+      轮廓法与 OCR 都容易失效，而检测网络靠全局语义找车牌。
+    * **较大且清晰的图** → ``clear_first`` 优先（默认 ``deep``）。
 
-    返回 ``(首选, 理由)``；不可用的成员不在 ``members`` 里，所以这里不做
-    可用性判断。
+    除首选之外**一律保持 ``members`` 的配置顺序** —— 早期版本在这里用了
+    一份硬编码的 ``("deep", "yolo", "cv")``，导致用户配置的
+    ``fusion_members`` 顺序被悄悄无视（详见 ``docs/ACCURACY.md`` 的
+    "auto 路由"一节：实测这套硬编码在 CCPD 上要付出 4 张的代价）。
+
+    Args:
+        image: 待识别图像（只用来算尺寸与模糊度）。
+        members: 可用成员名（已过滤掉不可用成员）。
+        clear_first: 图像清晰且够大时的首选成员名；不在 ``members`` 里
+            则退回 ``members`` 原顺序（不强行插一个没在岗的成员）。
+
+    Returns:
+        ``(首选, 理由)``。
     """
     ordered = list(members)
     if not ordered:
@@ -134,15 +152,20 @@ def select_single_engine(
     side = max(image.shape[:2]) if image is not None and image.size else 0
     blur = blur_score(image)
     prefer_detector = side < AUTO_SMALL_SIDE or blur < AUTO_BLUR_THRESHOLD
-    preference = ("yolo", "deep", "cv") if prefer_detector else ("deep", "yolo", "cv")
-    ranked = [m for m in preference if m in ordered]
-    ranked += [m for m in ordered if m not in ranked]
+    if prefer_detector:
+        head = next((m for m in ordered if m in DETECTOR_MEMBERS), None)
+        why = (
+            f"图像较小或偏糊（长边={side}，模糊度={blur:.1f}）→ "
+            f"{head or ordered[0]}（检测网络）优先"
+        )
+    else:
+        head = clear_first if clear_first in ordered else None
+        why = (
+            f"图像清晰且够大（长边={side}，模糊度={blur:.1f}）→ "
+            f"{head or ordered[0]}（配置首选）优先"
+        )
 
-    why = (
-        f"图像较小或偏糊（长边={side}，模糊度={blur:.1f}）→ 检测网络优先"
-        if prefer_detector
-        else f"图像清晰且够大（长边={side}，模糊度={blur:.1f}）→ 深度学习引擎优先"
-    )
+    ranked = ([head] if head else []) + [m for m in ordered if m != head]
     return ranked[0], why
 
 
@@ -408,6 +431,7 @@ class FusionEngine(BaseEngine):
         chain_accept: float | None = None,
         min_support: int | None = None,
         trusted_weight: float | None = None,
+        clear_first: str | None = None,
         member_factory: Callable[[str], Any] | None = None,
     ) -> None:
         """
@@ -421,6 +445,8 @@ class FusionEngine(BaseEngine):
             chain_accept: ``chain`` 的"够可信"门槛。
             min_support: 融合结果要留下所需的最少一致成员数。
             trusted_weight: 单成员独存所需的票权。
+            clear_first: ``auto`` 在清晰大图上的首选成员（默认跟随 config
+                的 ``fusion_auto_clear_first``，再退到 ``"deep"``）。
             member_factory: 成员引擎工厂（默认 ``get_engine``）。测试注入用。
         """
         cfg = config
@@ -454,6 +480,11 @@ class FusionEngine(BaseEngine):
             trusted_weight
             if trusted_weight is not None
             else _cfg_value(cfg, "fusion_trusted_weight", DEFAULT_TRUSTED_WEIGHT)
+        )
+        self.clear_first = str(
+            clear_first
+            if clear_first is not None
+            else _cfg_value(cfg, "fusion_auto_clear_first", DEFAULT_CLEAR_FIRST)
         )
         if self.strategy not in STRATEGIES:
             raise ValueError(f"未知融合策略: {self.strategy}（可选: {', '.join(STRATEGIES)}）")
@@ -630,7 +661,7 @@ class FusionEngine(BaseEngine):
         names = tuple(self._members)
         if not names:
             return []
-        first, why = select_single_engine(img, names)
+        first, why = select_single_engine(img, names, self.clear_first)
         preference = [first, *[m for m in _rank_order(names) if m != first]]
         tried: list[str] = []
         for name in preference:
