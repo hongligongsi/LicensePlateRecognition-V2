@@ -506,7 +506,12 @@ class TestMasking:
 @pytest.fixture
 def qt_app(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    pytest.importorskip("PySide6")
+    # 这里必须 importorskip 到**子模块**，不能只写 "PySide6"：PySide6 顶层
+    # import 并不加载 Qt 平台库，``QtWidgets`` 才加载。Ubuntu CI 上缺
+    # ``libEGL.so.1`` 时，抛 ImportError 的正是下一行，于是 4 个界面用例会以
+    # 「error / failed」的形式把 5 个 ubuntu 作业全弄红，而 Windows 上一切正常，
+    # 本地根本复现不出来（v2.7.3 首次推送的真实教训）。
+    pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtWidgets import QApplication
 
     return QApplication.instance() or QApplication([])
@@ -566,8 +571,12 @@ class TestGuiLogPanel:
         finally:
             win.close()
 
-    def test_open_directory_failure_is_reported_not_raised(self, monkeypatch):
-        """打不开文件管理器只降级为一句说明，不能把界面炸掉。"""
+    def test_open_directory_failure_is_reported_not_raised(self, qt_app, monkeypatch):
+        """打不开文件管理器只降级为一句说明，不能把界面炸掉。
+
+        带 ``qt_app`` 不只是为了建窗口：``lpr.ui.window`` 依赖 Qt 平台库，
+        环境不具备时应当跳过而不是报错（原因见 ``qt_app`` 的注释）。
+        """
         from lpr.ui import window as window_mod
 
         def boom(*_args, **_kwargs):

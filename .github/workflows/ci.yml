@@ -63,6 +63,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,gui,deep]"
 
+      # PySide6 的 wheel 带了 Qt 本体，但 QtGui/QtWidgets 在 Linux 上还要
+      # dlopen 系统的 libEGL / libGL，缺了就 `import PySide6.QtWidgets` 直接
+      # ImportError。ubuntu runner 不预装这些，所以界面用例只能整组 skip
+      # （v2.7.3 时它们甚至是以 error 的形式把作业弄红）。装上是为了让它们
+      # 真跑，而不是静默跳过 —— 无显示环境下跑靠的是上面的 QT_QPA_PLATFORM。
+      - name: 安装 Qt 运行所需的系统库（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libfontconfig1 libdbus-1-3
+
       - name: 运行测试
         env:
           # Qt 用例在无显示环境下跑（CI 没有 X）
