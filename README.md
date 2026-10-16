@@ -366,12 +366,12 @@ SVM 模型（`models/svm.dat`、`models/svmchinese.dat`）已随仓库附带，�
 
 | 目录 | 谁写的 | 能否删 | 说明 |
 |---|---|---|---|
-| `img/`、`samples/` | 仓库自带 | ❌ 不能删 | **入库**的真实样张。CI 的回归基线与准确率门槛都用它们 |
+| `img/`、`samples/` | 仓库自带 + 你下载的 | ❌ 不能删 | **入库**的真实样张。CI 的回归基线与准确率门槛都用它们。注意 `img/` 也被当成下载样本的落图目录（`tools/fetch_ccpd.py` 下到 `datasets/ccpd_raw` 后常被搬进来），2026-10-16 时已 403 张 / 75.7MB —— 往这里加图必须重新生成基线，否则 CI 会红（见 §13.4 与 `docs/ROADMAP.md` 第 4 项） |
 | `models/` | 仓库自带 + 你放的 | ❌ | `svm*.dat` 入库；`yolo/*.onnx` 需自备（已 gitignore） |
 | `annotated/` | `lpr predict --save-annotated` | ✅ 可删 | 标注图的**默认**输出目录（不写参数时用它）。已 gitignore |
 | `out/` | 文档示例里的 `--report out/` | ✅ 可删 | 只是文档惯用的输出目录名，**不是代码里的常量**。已 gitignore |
 | `reports/` | 评测/基准/调参脚本 | ✅ 可删可重生成 | `eval_*.py`、`benchmark.py`、`tune_*.py` 的 JSON/DTO 落盘。已 gitignore |
-| `images/` | 一次性集中副本 | ✅ 可删 | `img/` + `samples/` + `datasets/ccpd_labeled/` 的拷贝，为省事集中放一起。已 gitignore（体积） |
+| `images/` | 一次性集中副本 | ✅ 可删 | `img/` + `samples/` + `datasets/ccpd_labeled/` 的拷贝，为省事集中放一起。已 gitignore（体积）。**2026-10-16 时已空**，那份活实际被 `img/` 兼了（见上一行） |
 | `datasets/` | `tools/fetch_*.py` | ✅ 可删可重下 | 下载的数据集。已 gitignore |
 | `tests/baselines/hard/` | `tools/make_hard_samples.py` | ✅ 可删可重生成 | 确定性生成的对抗退化样张。已 gitignore |
 | `logs/` | 程序自己 | ✅ 可删 | **运行日志**（下面的 §3.8）。已 gitignore，删了只是丢掉历史记录 |
@@ -1338,6 +1338,7 @@ tools/
 models/                 # 预训练 SVM 模型（原版权重，config.json 内置哈希）
 models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线与准确率门槛的数据来源）
+                        #   img/ 同时被当下载样本的落图目录用，403 张 / 75.7MB —— §3.7
 logs/                   # 运行日志（自动创建；主进程 + 每个子进程一个文件）—— §3.8
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
                         #   加 doctor 参数为只读环境体检
@@ -1427,13 +1428,19 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 2. **`test`（多版本 pytest，5 个组合）**：
    Ubuntu × Python 3.10 / 3.11 / 3.12 / 3.13，外加 **Windows × 3.12**。
    Windows 单独覆盖的理由：本项目大量中文路径 / 路径分隔符逻辑与 Windows 强相关。
-   Qt 用例在 `QT_QPA_PLATFORM=offscreen` 下跑（CI 没有 X）。
+   Qt 用例在 `QT_QPA_PLATFORM=offscreen` 下跑（CI 没有 X）；Linux 作业还会额外装
+   `libegl1 / libgl1 / libfontconfig1 / libdbus-1-3` —— PySide6 的 wheel 只带 Qt 本体，
+   `QtGui`/`QtWidgets` 在 Linux 上还要 dlopen 这些系统库，缺了连
+   `import PySide6.QtWidgets` 都会 ImportError（v2.7.3 首次推送把 5 个 ubuntu 作业
+   全部弄红的真实原因，详见 `docs/UPGRADE.md`）。
 
 **回归防线**（都包含在上面的 pytest 里，不单独占 job）：
 
-- **定位行为回归基线**：用确定性 `cv` 引擎跑仓库自带的 11 张真实样张（`img/` + `samples/`），
+- **定位行为回归基线**：用确定性 `cv` 引擎跑 `img/` + `samples/` 下的**全部**图片
+  （2026-10-16 时为 403 张 —— 其中含一批下载来的 CCPD 样张，见 `docs/ROADMAP.md` 第 4 项），
   与 `tests/baselines/real_samples.json` 对照 —— 候选数、top 候选框（IoU ≥ 0.85）、
-  top 底色**任一漂移即失败**；
+  top 底色**任一漂移即失败**。往 `img/` 里加图会让这条绊线报错，
+  那是故意的：新增样张必须重新生成基线（`python tools/make_regression_baseline.py --write`）；
 - **真实样张准确率门槛**：`deep` 引擎 + `tests/baselines/ground_truth.json` 人工真值；
 - **对抗退化样张**：`make_hard_samples.py` 确定性生成（模糊/降采样/曝光/噪点/倾斜/压缩），
   跨运行结果一致。
@@ -1603,8 +1610,11 @@ python tools/shot.py reports/ui.png --sample samples/1.jpg
   差异是可信的（每张图都测了）。
 - **CCPD 以 `皖` 牌为主**，省份混淆对的方向不可迁移（实测两个引擎都把 `赣`/`苏` 读成 `皖`）。
   **不要**据此在生产里加"省份白名单"。
-- `img/` 与 `images/` 两份样张存在冗余（`img/` 是 `images/` 的严格子集），
-  未合并的原因是测试与基线 JSON 引用的是 `img/`。见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+- `img/` 现在是**样张全集**：既有原本入库的 9 张样张，也有从 CCPD 下载后搬进来的样本
+  （2026-10-16 时共 403 张 / 75.7MB）。原先设想的 `images/`（一次性集中副本）现在
+  **是空目录**，所以"`img/` 是 `images/` 的子集"这个说法已不成立；测试与基线 JSON
+  引用的一直是 `img/`。想把体积降回原量级，应当把下载图放进 `datasets/`（已 gitignore），
+  而不是继续往 `img/` 里搬。见 [docs/ROADMAP.md](docs/ROADMAP.md) 第 4 项。
 
 ### 15.5 运行日志
 

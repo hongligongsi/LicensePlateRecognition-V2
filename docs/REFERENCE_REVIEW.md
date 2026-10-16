@@ -214,8 +214,8 @@ ordered[3] = pts[np.argmax(d)]   # 左下
 4. 按环序补齐右下、左下，保证输出 `width > height`。
 
 预期收益：恢复上表中 `single_blue` 那类「定位已命中、只是矫正歪了」的样本；
-风险是改动核心几何，**必须过** `tests/test_regression_baseline.py` 的
-11 张行为快照 + 全量 478 项测试。
+风险是改动核心几何，**必须过** `tests/test_regression_baseline.py` 的行为快照
++ 全量测试（快照现在是 403 张样张，全量 1195 项；本文件写作时分别是 11 张与 478 项）。
 
 ---
 

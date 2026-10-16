@@ -2494,9 +2494,10 @@ for base, now in zip(baseline["records"], current["records"], strict=False):
 `test_baseline_covers_repo_samples` 这条**故意保持会失败** —— 它是"样张清单
 变了就该重新生成基线"的绊线，只把报错信息改成直接列出多了/缺了哪些。
 
-> 附带发现：`img/` 目录里现在有 202 个文件（其中 192 个不在基线内、也不在 git 里），
+> 附带发现：`img/` 目录里当时有 202 个文件（其中 192 个不在基线内、也不在 git 里），
 > 总体积 61.4MB，超过了"样张总体积 < 40MB"这条 CI 预算。数据是否保留由使用者决定，
 > 这里只保证**测试能说清问题**，不擅自删文件。
+> → 使用者的决定与随后的处理见下面的「四」，那两条红已按"保留入库、改门槛"解决。
 
 ## 三、验证
 
@@ -2504,7 +2505,80 @@ for base, now in zip(baseline["records"], current["records"], strict=False):
   幂等与 force 重建、级别解析、配置与命令行接线、脱敏贯通到文件、
   界面日志面板回归），`test_launch_env.py` +8、`test_batch_parallel.py` +1，
   总数 1126 → **1195**；
-* `ruff` / `mypy` 全绿；全量 pytest **1193 / 1195** 通过 —— 剩的 2 条红是
+* `ruff` / `mypy` 全绿；全量 pytest 当时是 **1193 / 1195** 通过 —— 剩的 2 条红是
   `img/` 被塞了 192 张本地图导致的（样张清单与 40MB 预算），属**数据问题**，
-  不是代码问题：11 张基线样张的定位行为逐张复算 IoU 全为 1.000；
+  不是代码问题：11 张基线样张的定位行为逐张复算 IoU 全为 1.000
+  （→ 这 2 条已在「四」里解决，现在全量 **1195 / 1195**）；
 * 实机抓了一段真实日志贴进 README §3.8（含 `--workers 2` 产生的子进程文件）。
+
+## 四、v2.7.3 之后的收尾（同一天）
+
+v2.7.3 推送后连着发现两件事，都与"运行日志"无关，但都出在同一次推送之后。
+
+### 4.1 CI 上一处真实的红：界面用例缺 libEGL
+
+5 个 ubuntu 作业全红，而 Windows 作业通过，失败点全在
+`tests/test_logging_setup.py::TestGuiLogPanel`：
+
+```
+ERROR  ...::test_panel_keeps_refreshing_after_it_is_full
+ERROR  ...::test_panel_shows_the_log_file_path
+ERROR  ...::test_panel_says_so_when_file_logging_is_off
+FAILED ...::test_open_directory_failure_is_reported_not_raised
+E  ImportError: libEGL.so.1: cannot open shared object file
+```
+
+原因是 `pytest.importorskip("PySide6")` **拦不住**这种失败：PySide6 顶层 import
+并不加载 Qt 平台库，`QtWidgets` 才加载 —— importorskip 放行，下一行照样炸。
+本机 Windows 上 Qt 库齐全，完全复现不出来；静态检查作业（ruff + mypy）反而是绿的，
+所以光看作业名很容易误判成"CI 环境问题"。
+
+两条一起修：
+
+* **测试侧**：`qt_app` 改成 `pytest.importorskip("PySide6.QtWidgets")`，环境缺平台库时
+  整组用例 **skip 而不是 error**；`_open_directory` 那条也挂上 `qt_app`（它 import
+  `lpr.ui.window`，同样依赖平台库）；
+* **CI 侧**：Linux 作业补装 `libegl1 / libgl1 / libfontconfig1 / libdbus-1-3`，
+  让这些用例在 Linux 上**真跑**而不是静默跳过。`ci.yml` 的注释本来就写着"Qt 用例在
+  无显示环境下跑（CI 没有 X）"，但此前**没有任何用例会建 `QApplication`**，
+  这个前提从未被验证过。
+
+修完 ubuntu 作业的通过数 1187 → **1189**（那 4 条从 error/failed 变成真跑并通过）。
+
+### 4.2 样张目录治理：按使用者决定"保留入库、改门槛"
+
+推送当天 `img/` 又进了三批下载样本（17:18、17:26 各约 100 张，18:25 再 200 张
+`sample_*.jpg`）。命名来自 `tools/fetch_ccpd.py` —— 它本身下到 `datasets/ccpd_raw`
+（已 gitignore），之后被搬进了 `img/`。使用者的决定是**全部保留在仓库、按现实改门槛**：
+
+* `tests/baselines/real_samples.json` 重新生成：11 条 → **403 条**
+  （`img/` 401 + `samples/` 2；`img/` 里的 `A1_Z拖链.3mf` 不是图片，被按扩展名滤掉）；
+* 体积预算 `40MB → 150MB`，并提成常量 `SAMPLE_SIZE_BUDGET_MB`、把取舍写进注释：
+  它现在只是**失控增长护栏**，不再是"体积小 / checkout 很快"的承诺；
+* 文档同步：README §3.7 / §13.4 / §15.4、ACCURACY §7.3、REFERENCE_REVIEW §5、
+  ROADMAP 第 4 项 —— "11 张真样张"改成"403 张（**带人工真值的仍只有 11 张**）"，
+  并如实记下"`img/` 同时是下载落图目录"这个**根因未除**的事实与三条根治思路。
+* 判据也跟着改对了一处：原来的 `test_locate_still_finds_candidates` 断言"基线里
+  每张样张都能定位到候选"，那是 11 张精选样张时代的前提 —— 403 张里有 2 张
+  （`img/0315_067.jpg`、`img/sample_1095.jpg`）cv 引擎本来就给不出候选。
+  已改成 `test_candidate_presence_matches_baseline`：**逐张比较"有候选/没候选"是否
+  与基线一致**。既不再误判那 2 张，又顺带补上了 `test_top_bbox_not_drifted` 的缺口
+  （那条在"基线有框、现在没框"时会 `continue` 跳过）。
+
+执行时实测：`img/` 402 个文件 / 68.8MB，连同 `samples/` 共 **75.7MB**
+（`datasets/ccpd_raw` 里另躺着 654 个未入库文件）。
+
+### 4.3 推送与发布
+
+| 提交 | 内容 |
+|---|---|
+| `2cf1076` | v2.7.3 运行日志落盘（本文档主体） |
+| `37788b2` | `img/` 纳入 192 张本地样张 + 1 个 `.3mf` |
+| `9b1c49b` | `img/` 再纳入 200 张 CCPD 样张 |
+| `1bf7273` | 修 CI：界面用例在 Ubuntu 上缺 libEGL |
+| 最后一个 | 样张治理：基线 11 → 403 条、体积预算 40 → 150MB、文档同步 |
+
+* tag 与 Release：`v2.7.3` 已打并推送，`v2.7.2` 此前只有提交、漏了 tag 与 Release，
+  本次一并补齐（两个 Release 都建了）。
+* 注意 **`v2.7.3` tag 指向 `2cf1076`**，不含之后那三个"测试 / 数据 / CI"性质的提交 ——
+  发出去的**代码**与 tag 内容一致，后面动的只有测试、CI 配置与样张数据。

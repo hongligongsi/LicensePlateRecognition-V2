@@ -13,6 +13,17 @@
 * 判据带容差（IoU ≥ 0.85、候选数 ±1），因为不同 OpenCV 版本的形态学
   实现可能有 1~2 像素级差异，那不算回归
 
+覆盖范围
+--------
+快照覆盖 ``img/`` + ``samples/`` 下**全部**图片。v2.7.3 时为 403 张
+（``img/`` 401 + ``samples/`` 2），可读性无一异常。
+
+注意 ``img/`` 同时被当作下载样本的落图目录（``tools/fetch_ccpd.py`` 下到
+``datasets/ccpd_raw``，之后常被搬进 ``img/``），于是**加图就会让
+:func:`test_baseline_covers_repo_samples` 变红** —— 那是故意的绊线：新增样张
+必须重新生成基线，否则下面几条逐张对照会失去意义。体积护栏见
+:data:`SAMPLE_SIZE_BUDGET_MB`。
+
 基线更新方式：``python tools/make_regression_baseline.py --write``
 （**确认行为变化是预期之内**才更新）
 """
@@ -108,19 +119,31 @@ def test_all_repo_samples_readable(current):
     assert not broken, f"这些样张读不出来: {broken}"
 
 
-def test_locate_still_finds_candidates(baseline, current):
-    """基线里那批样张必须仍能找到候选（防止定位器整体失效）。
+def test_candidate_presence_matches_baseline(baseline, current):
+    """每张样张"定位得到候选 / 定位不到"必须与基线一致。
 
-    只查**基线覆盖过**的样张：``img/`` 下后来多出来的本地图片不属于"项目承诺
-    保持稳定"的那批，某张随手拍的车流照定位不到车牌不是回归。
+    判据是**逐张比较有/无**，而不是"断言每张都能定位到"：403 张里本来就有
+    2 张 cv 引擎给不出候选（``img/0315_067.jpg``、``img/sample_1095.jpg``），
+    断言"全都能定位"会把这 2 张误判成回归。而定位器整体失效的表现是
+    **大批原本有候选的样张同时落空**，逐张比较一样拦得住。
+
+    这条同时补上 :meth:`TestBehaviorUnchanged.test_top_bbox_not_drifted` 的缺口：
+    那条在"基线有框、现在没框"时会 ``continue`` 跳过，只靠它抓不住
+    "某张图从有候选变成没候选"。
     """
     now_by_path = _by_path(current["records"])
-    no_cand = []
-    for rec in baseline["records"]:
-        now = now_by_path.get(rec["path"])
-        if now is not None and now.get("readable") and not now.get("top_bbox"):
-            no_cand.append(rec["path"])
-    assert not no_cand, f"这些样张定位不到任何候选: {no_cand}"
+    flipped = []
+    for base in baseline["records"]:
+        now = now_by_path.get(base["path"])
+        if now is None or not now.get("readable"):
+            continue
+        was, is_now = bool(base.get("top_bbox")), bool(now.get("top_bbox"))
+        if was != is_now:
+            flipped.append(f"{base['path']}: 有候选 {was} -> {is_now}")
+    assert not flipped, (
+        "这些样张「有没有候选」与基线不一致（若为预期改动，请重新生成基线）：\n  "
+        + "\n  ".join(flipped)
+    )
 
 
 class TestBehaviorUnchanged:
@@ -128,8 +151,8 @@ class TestBehaviorUnchanged:
 
     必须按**路径**配对，不能按位置 ``zip`` —— 位置配对只要样张数量一变，
     就变成"图 A 的基线" 比 "图 B 的现状"，报出一屏假漂移把真信号埋掉。
-    （v2.7.3 实测踩到：``img/`` 被塞进 193 张本地图后，11 张真样张全部报 IoU≈0，
-    而按路径逐张复算的 IoU 全是 1.000。）
+    （v2.7.3 开发期实测踩到：``img/`` 被塞进 193 张本地图后，基线里那 11 张
+    真样张全部报 IoU≈0，而按路径逐张复算的 IoU 全是 1.000。）
     """
 
     def test_top_bbox_not_drifted(self, baseline, current):
@@ -230,14 +253,32 @@ def test_snapshot_skips_unreadable_without_crashing(tmp_path, monkeypatch):
     assert snap["records"][0]["readable"] is False
 
 
+#: 样张总体积护栏（``img/`` + ``samples/``）。
+#:
+#: **40MB → 150MB（2026-10-16 调整）**：40MB 那个数字是 ``img/`` 里只有 9 张
+#: 入库样张时定的，当时它等价于"CI checkout 会很快"。现在 ``img/`` 同时是
+#: CCPD 下载样本的落图目录（403 张 / 75.7MB），用户决定保留入库、按现实改门槛，
+#: 于是这个断言退化成**失控增长护栏**：它拦的是"哪天不小心把几百 MB 塞进来"，
+#: 不再是"体积很小 / checkout 很快"的承诺。想让体积回到原来的量级，应当把
+#: 下载图放进 ``datasets/``（已在 .gitignore 里），而不是继续往 ``img/`` 里搬。
+SAMPLE_SIZE_BUDGET_MB = 150
+
+
 def test_repo_samples_are_small_enough_for_ci():
-    """样张总体积要可控，否则 CI 每次 checkout 都很慢。"""
+    """样张总体积要有护栏，防止某天把几百 MB 顺手塞进仓库。
+
+    这个上限现在只防失控，不代表体积小 —— 取舍的来龙去脉见
+    :data:`SAMPLE_SIZE_BUDGET_MB` 的注释。
+    """
     total = 0
     for d in ("img", "samples"):
         root = ROOT / d
         if root.is_dir():
             total += sum(p.stat().st_size for p in root.iterdir() if p.is_file())
-    assert total < 40 * 1024 * 1024, f"样张总体积 {total / 1048576:.1f}MB 偏大"
+    budget = SAMPLE_SIZE_BUDGET_MB * 1024 * 1024
+    assert total < budget, (
+        f"样张总体积 {total / 1048576:.1f}MB，超过 {SAMPLE_SIZE_BUDGET_MB}MB 护栏"
+    )
 
 
 def test_cv_engine_baseline_needs_no_download():
