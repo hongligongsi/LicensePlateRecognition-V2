@@ -29,10 +29,18 @@ LAUNCHER_SRC = (TOOLS / "launcher.py").read_text(encoding="utf-8")
 
 
 def _load_launcher():
-    """按文件路径加载 ``tools/launcher.py``（它不是包的一部分）。"""
+    """按文件路径加载 ``tools/launcher.py``（它不是包的一部分）。
+
+    加载前必须把模块放进 ``sys.modules``：``spec_from_file_location`` +
+    ``exec_module`` 这条路径**不会**自动注册，而 ``@dataclass`` 这类装饰器会在
+    装饰期去 ``sys.modules[cls.__module__].__dict__`` 取命名空间，漏了这一步
+    就报 ``AttributeError: 'NoneType' object has no attribute '__dict__'``。
+    （实测踩到过。启动器因此只用 ``NamedTuple``；这里也按标准写法补上。）
+    """
     spec = importlib.util.spec_from_file_location("_lpr_launcher", TOOLS / "launcher.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules["_lpr_launcher"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -317,6 +325,420 @@ class TestPythonLauncher:
         out = capsys.readouterr().out
         assert "错误" in out  # 中文提示确实发出来了
         assert "99.0" in out
+
+
+def _fake_root(tmp_path: Path, *, svm: bool = True, yolo: bool = True) -> Path:
+    """造一个假的「项目根」，用来在**不碰真实 models/** 的前提下验证自检。"""
+    root = tmp_path / "proj"
+    (root / "models" / "yolo").mkdir(parents=True)
+    if svm:
+        (root / "models" / "svm.dat").touch()
+        (root / "models" / "svmchinese.dat").touch()
+    if yolo:
+        (root / "models" / "yolo" / "plate_det.onnx").touch()
+    return root
+
+
+def _all_backends(**overrides: bool) -> dict[str, bool]:
+    """默认「后端齐全」，可覆盖个别项。"""
+    payload = {"rapidocr_onnxruntime": True, "paddleocr": False, "onnxruntime": True}
+    payload.update(overrides)
+    return payload
+
+
+class TestAssetManifest:
+    """启动器的模型清单不能和引擎实现各说各话。
+
+    这组测试防的是本模块最讨厌的那种 bug：启动器只允许依赖标准库，因此不可能
+    ``import lpr`` 去问引擎「你需要哪些文件」，只能自带一份清单。清单一旦漂移，
+    启动器就变成第二个「假真相」—— 它说齐全、引擎说不可用，而用户不知道该信谁。
+    所以这里拿真实引擎的常量逐条钉死。
+    """
+
+    @staticmethod
+    def _rel(path: Path) -> str:
+        return path.relative_to(ROOT).as_posix()
+
+    @staticmethod
+    def _by_rel() -> dict[str, object]:
+        return {asset.rel: asset for asset in LAUNCHER.ASSETS}
+
+    def test_cv_paths_follow_config_models_dir(self):
+        from lpr.config import MODELS_DIR
+
+        by_rel = self._by_rel()
+        cv_src = (SRC / "lpr" / "engines" / "cv_engine.py").read_text(encoding="utf-8")
+        for name in ("svm.dat", "svmchinese.dat"):
+            assert self._rel(MODELS_DIR / name) in by_rel, f"清单漏了 cv 需要的 {name}"
+            # 文件名是写死在 cv_engine 里的字面量（那边没有导出常量）
+            assert f'"{name}"' in cv_src, f"cv_engine 已经不再引用 {name}，清单要跟着改"
+
+    def test_yolo_paths_follow_yolo_engine_constants(self):
+        from lpr.engines import yolo_engine
+
+        by_rel = self._by_rel()
+        assert yolo_engine.locate_model_dir() == ROOT / yolo_engine.DEFAULT_MODEL_DIR
+        cases = [
+            (yolo_engine.DETECT_MODEL_NAME, False),
+            (yolo_engine.RECOGNIZE_MODEL_NAME, True),
+            (yolo_engine.CHARSET_NAME, True),
+        ]
+        for name, optional in cases:
+            rel = self._rel(yolo_engine.locate_model_dir() / name)
+            assert rel in by_rel, f"清单漏了 {name}"
+            assert by_rel[rel].optional is optional, f"{name} 的必需/可选标错了"
+
+    def test_detect_weight_is_the_only_required_yolo_asset(self):
+        required = {a.rel for a in LAUNCHER.ASSETS if a.engine == "yolo" and not a.optional}
+        assert required == {"models/yolo/plate_det.onnx"}
+
+    def test_every_required_asset_carries_a_fix_hint(self):
+        # 报了「缺什么」却不说「怎么办」，等于把问题丢回给用户
+        for asset in LAUNCHER.ASSETS:
+            if asset.optional:
+                continue
+            assert asset.hint.strip(), f"{asset.rel} 缺少修复提示"
+
+    def test_fusion_owns_no_weights(self):
+        # 三合一的可用性由成员派生，它自己不直接吃权重
+        assert all(a.engine in {"cv", "deep", "yolo"} for a in LAUNCHER.ASSETS)
+
+    def test_engine_names_and_labels_match_the_registry(self):
+        from lpr.engines import available_engines, describe_engines
+
+        assert set(LAUNCHER.ENGINE_ORDER) == set(available_engines())
+        assert set(LAUNCHER.ENGINE_LABELS) == set(LAUNCHER.ENGINE_ORDER)
+        described = {row["name"]: row["display_name"] for row in describe_engines()}
+        assert {name: LAUNCHER.ENGINE_LABELS[name] for name in described} == described
+
+    def test_backend_probes_match_the_engines_own_probes(self):
+        """后端模块名必须就是引擎 ``is_available()`` 里 import 的那个名字。"""
+        deep_src = (SRC / "lpr" / "engines" / "deep_engine.py").read_text(encoding="utf-8")
+        yolo_src = (SRC / "lpr" / "engines" / "yolo_engine.py").read_text(encoding="utf-8")
+        for module in LAUNCHER.BACKENDS:
+            assert f"import {module}" in deep_src + yolo_src, f"{module} 在引擎里已经不存在"
+        assert LAUNCHER.BACKENDS["onnxruntime"][0] == "yolo"
+        assert LAUNCHER.BACKENDS["rapidocr_onnxruntime"][0] == "deep"
+
+    def test_engine_level_backend_needs_cover_the_same_modules(self):
+        """``BACKEND_NEEDS`` 与 ``BACKENDS`` 是同一批模块的两种视角，不许漂移。"""
+        needed = {module for modules, _ in LAUNCHER.BACKEND_NEEDS.values() for module in modules}
+        assert needed == set(LAUNCHER.BACKENDS)
+        for engine, (modules, _what) in LAUNCHER.BACKEND_NEEDS.items():
+            for module in modules:
+                assert LAUNCHER.BACKENDS[module][0] == engine, f"{module} 的归属对不上 {engine}"
+
+
+class TestVerdictAgainstEngines:
+    """静态判定不许与引擎自己的 ``is_available()`` 打架。"""
+
+    @staticmethod
+    def _static() -> dict[str, object]:
+        runtime_ok, _gui, backends = LAUNCHER.module_report([sys.executable])
+        states = LAUNCHER.scan_assets(ROOT)
+        return {
+            s.name: s
+            for s in LAUNCHER.engine_report(states, runtime_ok=runtime_ok, backends=backends)
+        }
+
+    @staticmethod
+    def _real() -> dict[str, bool]:
+        from lpr.engines import describe_engines
+
+        return {row["name"]: bool(row["available"]) for row in describe_engines()}
+
+    def test_never_more_optimistic_than_the_engines_themselves(self):
+        """启动器说「可用」的，引擎自己也必须说可用 —— 这是用户唯一会看到的那句话。"""
+        real = self._real()
+        for name, status in self._static().items():
+            if status.ok:
+                assert real[name], f"启动器报 {name} 可用，引擎自己报不可用"
+
+    def test_exact_agreement_when_everything_is_provisioned(self):
+        real = self._real()
+        if not all(real.values()):
+            pytest.skip("本机有引擎不可用（CI 只装 .[dev]），一致性留待齐全的机器验证")
+        assert {name: s.ok for name, s in self._static().items()} == real
+
+
+class TestEngineReport:
+    """由「运行库 + 后端 + 权重」推可用性的规则本身。"""
+
+    def test_all_present_means_all_available(self, tmp_path):
+        states = LAUNCHER.scan_assets(_fake_root(tmp_path))
+        report = {
+            s.name: s
+            for s in LAUNCHER.engine_report(states, runtime_ok=True, backends=_all_backends())
+        }
+        assert all(s.ok for s in report.values())
+        assert report["fusion"].detail == "成员：yolo / deep / cv"
+
+    def test_missing_detection_weight_only_breaks_yolo(self, tmp_path):
+        states = LAUNCHER.scan_assets(_fake_root(tmp_path, yolo=False))
+        report = {
+            s.name: s
+            for s in LAUNCHER.engine_report(states, runtime_ok=True, backends=_all_backends())
+        }
+        assert not report["yolo"].ok
+        assert "plate_det.onnx" in report["yolo"].reason
+        assert "fetch_yolo_weights.py" in report["yolo"].fix
+        assert report["cv"].ok and report["deep"].ok
+        # 三合一退到只剩两个成员，但仍然可用
+        assert report["fusion"].ok
+        assert "deep" in report["fusion"].detail and "yolo" not in report["fusion"].detail
+
+    def test_yolo_reports_backend_and_weight_together(self, tmp_path):
+        """缺后端 + 缺权重是一次报全 —— 否则用户要装一次、重启、再发现还缺东西。"""
+        states = LAUNCHER.scan_assets(_fake_root(tmp_path, yolo=False))
+        report = {
+            s.name: s
+            for s in LAUNCHER.engine_report(
+                states, runtime_ok=True, backends=_all_backends(onnxruntime=False)
+            )
+        }
+        assert "onnxruntime" in report["yolo"].reason
+        assert "plate_det.onnx" in report["yolo"].reason
+        assert report["yolo"].fix.count("\n") >= 2
+
+    def test_missing_svm_weight_breaks_cv_only(self, tmp_path):
+        states = LAUNCHER.scan_assets(_fake_root(tmp_path, svm=False))
+        report = {
+            s.name: s
+            for s in LAUNCHER.engine_report(states, runtime_ok=True, backends=_all_backends())
+        }
+        assert not report["cv"].ok
+        assert "svm.dat" in report["cv"].reason
+        assert report["deep"].ok and report["yolo"].ok
+
+    def test_no_runtime_library_fails_every_engine_with_one_reason(self, tmp_path):
+        states = LAUNCHER.scan_assets(_fake_root(tmp_path))
+        report = list(LAUNCHER.engine_report(states, runtime_ok=False, backends=_all_backends()))
+        assert not any(s.ok for s in report)
+        for status in report:
+            assert "运行库" in status.reason or "可用成员" in status.reason
+
+    def test_deep_accepts_paddleocr_as_an_alternative_backend(self, tmp_path):
+        states = LAUNCHER.scan_assets(_fake_root(tmp_path))
+        report = {
+            s.name: s
+            for s in LAUNCHER.engine_report(
+                states,
+                runtime_ok=True,
+                backends=_all_backends(rapidocr_onnxruntime=False, paddleocr=True),
+            )
+        }
+        assert report["deep"].ok
+
+    def test_optional_assets_never_break_anything(self, tmp_path):
+        # 只有必需资产存在（可选的两个都没有），四个引擎依然全绿
+        root = _fake_root(tmp_path)
+        assert not (root / "models" / "yolo" / "plate_rec.onnx").exists()
+        states = LAUNCHER.scan_assets(root)
+        assert [s.asset.rel for s in states if s.missing] == []
+        assert all(
+            s.ok for s in LAUNCHER.engine_report(states, runtime_ok=True, backends=_all_backends())
+        )
+
+    def test_undersized_asset_is_flagged_but_not_failed(self, tmp_path):
+        """桩模型是合法用法，所以「文件偏小」只能提示，不能判失败。"""
+        root = _fake_root(tmp_path)
+        (root / "models" / "yolo" / "plate_det.onnx").write_bytes(b"x" * 604)
+        states = LAUNCHER.scan_assets(root)
+        states2 = LAUNCHER.scan_assets(root)
+        assert [s.undersized for s in states].count(True) == 1
+        assert "可能是自检桩模型" in "\n".join(LAUNCHER.render_assets(states2))
+        assert all(
+            s.ok for s in LAUNCHER.engine_report(states, runtime_ok=True, backends=_all_backends())
+        )
+
+
+class TestProbeModules:
+    """一次子进程问清多个模块 —— 真 import，不是 find_spec。"""
+
+    def test_reports_true_and_false_per_module(self):
+        result = LAUNCHER.probe_modules([sys.executable], ("json", "lpr_definitely_absent"))
+        assert result == {"json": True, "lpr_definitely_absent": False}
+
+    def test_broken_interpreter_yields_all_false(self):
+        missing = str(ROOT / "no" / "such" / "python.exe")
+        assert LAUNCHER.probe_modules([missing], ("json",)) == {"json": False}
+
+    def test_empty_request_returns_empty(self):
+        assert LAUNCHER.probe_modules([sys.executable], ()) == {}
+
+    def test_uses_exactly_one_subprocess_for_all_modules(self, monkeypatch):
+        calls = []
+        real_run = subprocess.run
+
+        def spy(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(LAUNCHER.subprocess, "run", spy)
+        LAUNCHER.probe_modules([sys.executable], ("json", "sys", "os"))
+        assert len(calls) == 1, "每个模块各起一个进程会让每次启动多等好几秒"
+
+
+class TestDisplayWidth:
+    """中文按 2 列算 —— 不然引擎表的「状态」列会对不齐。"""
+
+    def test_cjk_counts_as_two_columns(self):
+        assert LAUNCHER._width("传统 CV 引擎") == 12
+        assert LAUNCHER._width("abc") == 3
+
+    def test_pad_produces_equal_rendered_width(self):
+        rows = [LAUNCHER._pad("传统 CV 引擎", 14), LAUNCHER._pad("检测识别引擎", 14)]
+        assert {LAUNCHER._width(r) for r in rows} == {14}
+
+
+class TestDoctor:
+    """``doctor`` 只体检：不建 venv、不装包、不改动任何文件。"""
+
+    @staticmethod
+    def _patch_probes(monkeypatch, runtime: bool = True, gui: bool = True, backends=None):
+        payload = _all_backends() if backends is None else backends
+
+        def fake(_interp, modules, timeout=180):
+            return {
+                **dict.fromkeys(LAUNCHER.RUNTIME_MODULES, runtime),
+                **dict.fromkeys(LAUNCHER.GUI_MODULES, gui),
+                **{m: bool(payload.get(m)) for m in LAUNCHER.BACKENDS},
+            }
+
+        monkeypatch.setattr(LAUNCHER, "probe_modules", fake)
+
+    def _forbid_side_effects(self, monkeypatch):
+        def boom(*_args, **_kwargs):
+            raise AssertionError("doctor 是只读的，不该走到这里")
+
+        for name in ("create_venv", "install_deps", "launch"):
+            monkeypatch.setattr(LAUNCHER, name, boom)
+
+    def test_changes_nothing_on_disk_and_touches_no_installer(self, tmp_path, monkeypatch, capsys):
+        self._forbid_side_effects(monkeypatch)
+        self._patch_probes(monkeypatch)
+        root = _fake_root(tmp_path, svm=False, yolo=False)
+        before = sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+        LAUNCHER.doctor(["py"], "create_venv", ["py"], root)
+        after = sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+        assert before == after
+        out = capsys.readouterr().out
+        assert "环境体检" in out and "只读" in out
+
+    def test_exit_code_zero_only_when_every_engine_is_available(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_probes(monkeypatch)
+        ok_root = _fake_root(tmp_path / "ok")
+        assert LAUNCHER.doctor(["py"], "reuse", ["py"], ok_root) == 0
+        assert "全部可用" in capsys.readouterr().out
+
+        broken_root = _fake_root(tmp_path / "broken", yolo=False)
+        assert LAUNCHER.doctor(["py"], "reuse", ["py"], broken_root) == 1
+        out = capsys.readouterr().out
+        assert "检测识别引擎" in out
+        assert "fetch_yolo_weights.py" in out
+        assert "3/4" in out
+
+    def test_notes_when_the_target_interpreter_does_not_exist_yet(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_probes(monkeypatch)
+        root = _fake_root(tmp_path)
+        LAUNCHER.doctor(["/tmp/does-not-exist/python"], "create_venv", ["py"], root)
+        out = capsys.readouterr().out
+        assert "目标解释器尚不存在" in out
+
+    def test_optional_missing_backend_is_not_marked_as_a_failure(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """装了 rapidocr、没装 paddleocr 的机器不该看到一行刺眼的「不可用」。"""
+        self._patch_probes(monkeypatch, backends=_all_backends(paddleocr=False))
+        LAUNCHER.doctor(["py"], "reuse", ["py"], _fake_root(tmp_path))
+        rows = [ln for ln in capsys.readouterr().out.splitlines() if "paddleocr" in ln]
+        assert rows, "体检必须列出 paddleocr"
+        assert rows[0].lstrip().startswith("[--]"), rows[0]
+        assert "未安装不影响" in rows[0]
+
+
+class TestStartupPreflight:
+    """每次启动都报权重结论；但缺权重**不许**挡住启动。"""
+
+    @staticmethod
+    def _patch(monkeypatch, root: Path, backends=None):
+        seen: dict[str, object] = {}
+        payload = _all_backends() if backends is None else backends
+        monkeypatch.setattr(LAUNCHER, "ROOT", root)
+        monkeypatch.setattr(LAUNCHER, "probe", lambda interp, timeout=120: True)
+        monkeypatch.setattr(LAUNCHER, "module_report", lambda target: (True, True, payload))
+
+        def fake_launch(target, args, root_=LAUNCHER.ROOT):
+            seen["args"] = list(args)
+            return 0
+
+        monkeypatch.setattr(LAUNCHER, "launch", fake_launch)
+        return seen
+
+    def test_reports_the_missing_weight_and_still_launches(self, tmp_path, monkeypatch, capsys):
+        seen = self._patch(monkeypatch, _fake_root(tmp_path, yolo=False))
+        assert LAUNCHER.main(["engines"]) == 0
+        out = capsys.readouterr().out
+        assert "[4/5] 模型权重与引擎" in out
+        assert "不可用：检测识别引擎" in out
+        assert "fetch_yolo_weights.py" in out
+        assert "start.bat doctor" in out
+        # 关键：仍然启动了，且参数原样透传
+        assert "[5/5] 正在启动..." in out
+        assert seen["args"] == ["engines"]
+
+    def test_says_all_available_when_nothing_is_missing(self, tmp_path, monkeypatch, capsys):
+        self._patch(monkeypatch, _fake_root(tmp_path))
+        LAUNCHER.main([])
+        out = capsys.readouterr().out
+        assert "全部可用：传统 CV 引擎 / 深度学习引擎 / 检测识别引擎 / 三合一引擎" in out
+
+    def test_doctor_token_is_intercepted_and_never_reaches_the_cli(self, monkeypatch, capsys):
+        calls: dict[str, object] = {}
+
+        def fake_doctor(target, action, probe, root):
+            calls["doctor"] = True
+            return 0
+
+        def fake_launch(target, args, root_=LAUNCHER.ROOT):
+            calls["launch"] = True
+            return 0
+
+        monkeypatch.setattr(LAUNCHER, "choose_target", lambda *a, **k: (["py"], "reuse"))
+        monkeypatch.setattr(LAUNCHER, "doctor", fake_doctor)
+        monkeypatch.setattr(LAUNCHER, "launch", fake_launch)
+        for token in ("doctor", "--doctor", "--check"):
+            calls.clear()
+            assert LAUNCHER.main([token]) == 0
+            assert calls.get("doctor") is True, token
+            assert "launch" not in calls, f"{token} 被当成引擎参数透传了"
+
+    def test_cli_check_subcommand_is_not_swallowed(self, monkeypatch, capsys):
+        """``lpr check 京A12345`` 是 CLI 子命令，不许被 doctor 的别名吃掉。"""
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(LAUNCHER, "choose_target", lambda *a, **k: (["py"], "reuse"))
+        monkeypatch.setattr(LAUNCHER, "doctor", lambda *a: pytest.fail("不该走 doctor"))
+        monkeypatch.setattr(LAUNCHER, "scan_assets", lambda root=LAUNCHER.ROOT: [])
+        monkeypatch.setattr(LAUNCHER, "module_report", lambda target: (True, True, _all_backends()))
+
+        def fake_launch(target, args, root_=LAUNCHER.ROOT):
+            seen["args"] = list(args)
+            return 0
+
+        monkeypatch.setattr(LAUNCHER, "launch", fake_launch)
+        LAUNCHER.main(["check", "京A12345"])
+        assert seen["args"] == ["check", "京A12345"]
+        assert "全部可用" in capsys.readouterr().out
+
+    def test_extra_arguments_after_doctor_are_ignored_with_a_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(LAUNCHER, "choose_target", lambda *a, **k: (["py"], "reuse"))
+        monkeypatch.setattr(LAUNCHER, "doctor", lambda *a: 0)
+        assert LAUNCHER.main(["doctor", "predict", "a.jpg"]) == 0
+        assert "忽略多余参数" in capsys.readouterr().out
 
 
 class TestLauncherMessages:

@@ -2178,3 +2178,138 @@ auto 的选择：deep × 85，yolo × 15   ← 85% 的图走了"清晰大图 →
   + fusion `clear_first` 6：4 个用例 + 2 个参数化校验），
   本机全量 pytest **1077 项全绿**；
 * `fusion(auto)@yolo` 的 +4 张是在真实 100 张上实测复验的，不是推算。
+
+# v2.7.1 —— 启动器补上模型权重自检（附 `doctor` 只读体检）
+
+> 起因：用户说「把启动文件完善下」。翻代码时发现一个**反馈链断点**：
+> 启动器只探测 numpy / OpenCV / Pillow / PySide6，装齐就打印「均已就绪」，
+> 而权重根本不在它的视野里 —— 于是 yolo 权重缺失时它照样报「就绪」，
+> 用户看到的却是界面下拉框里那行「（不可用）」。
+
+## 一、问题到底是什么
+
+`models/` 下的资产分三类，而启动器原先一类都不看：
+
+| 资产 | 归属 | 谁需要它 |
+|---|---|---|
+| `svm.dat` / `svmchinese.dat` | `cv` | 随仓库分发；缺了 `load()` 直接抛 |
+| `rapidocr_onnxruntime` / `paddleocr` | `deep` | **二选一**；模型 13.7 MB 在 wheel 里 |
+| `models/yolo/plate_det.onnx` + `onnxruntime` | `yolo` | **都不进仓库**：默认安装规格 `.[deep,gui]` 根本不含 `onnxruntime` |
+
+所以「装完依赖」和「引擎能用」之间隔着一整层。更糟的是这层失败是**静默**的：
+启动器没有报错，界面只是把那个引擎标成「（不可用）」，用户拿不到下一步该做什么。
+
+## 二、改了什么
+
+### 2.1 启动流程：四步 → 五步
+
+新增第 4 步，它只陈述事实，**不阻断启动**：
+
+```text
+[1/5] 解释器正常
+[2/5] 依赖齐全
+[3/5] 无需安装
+[4/5] 模型权重与引擎
+      可用：传统 CV 引擎 / 深度学习引擎 / 三合一引擎
+      不可用：检测识别引擎 —— 未安装 onnxruntime（检测推理后端）；缺少模型权重：models/yolo/plate_det.onnx
+              修复：pip install -e ".[yolo]"
+                    python tools/fetch_yolo_weights.py --list          # 已知来源与许可
+                    python tools/fetch_yolo_weights.py --github <owner/repo> --asset "*det*.onnx"
+      失去的只是对应引擎，界面与其他引擎照常可用；
+      要看完整报告执行：start.bat doctor
+[5/5] 正在启动...
+```
+
+顺手改掉了一句**不实的成功提示**：原来第 3 步结束后打印「完成 —— CV 引擎、
+深度引擎、图形界面均已就绪」。它当时就只保证 Python 依赖，现在改成
+「Python 运行库与图形界面已就绪」，引擎的结论交给第 4 步。
+
+### 2.2 新增 `start.bat doctor`（别名 `--doctor` / `--check`）
+
+只体检不启动。四条刻意的设计：
+
+1. **只读**：不建 `.venv`、不装包、不改任何文件 —— 环境已经坏掉时才最需要它，
+   所以它不能在诊断过程中继续动环境。用测试钉住了（把 `create_venv` /
+   `install_deps` / `launch` 换成抛异常的桩，再比对运行前后目录快照）。
+2. **退出码即结论**：四个引擎全可用 → 0，否则 1，脚本里可以直接判。
+3. **不制造假警报**：只装了 `rapidocr` 没装 `paddleocr`（二者其一即可）标 `[--]`，
+   只有真正拖垮某个引擎才标 `[!!]`。假警报比不报还糟 —— 用户会去修一个
+   本来没问题的地方。
+4. **一次报全**：`yolo` 同时缺 `onnxruntime` 与权重是最常见的新手形态，
+   两条一起给，免得「装一个 → 重启 → 发现还缺一个」。
+   原因里**必须写出模块名**（「未安装 onnxruntime」而不是「缺少后端」），
+   否则用户没法照着修 —— 这条是实现时就写错、被测试抓出来的。
+
+### 2.3 判定口径与引擎对齐（这是最需要小心的地方）
+
+启动器**只允许依赖标准库**（有守卫测试盯着它不许 `import lpr`，否则它会在
+最需要它工作的那台机器上 `ImportError`），所以它不可能去问引擎「你需要什么」，
+只能自带一份清单。清单一旦漂移，启动器就成了**第二个「假真相」**：
+它说齐全、引擎说不可用，用户不知道该信谁。
+
+因此：
+
+* 清单与引擎常量**逐条比对**，写成了测试（`TestAssetManifest`）：`cv` 的两个
+  `.dat` 走 `lpr.config.MODELS_DIR`，`yolo` 的三个文件名直接取
+  `yolo_engine.DETECT_MODEL_NAME` / `RECOGNIZE_MODEL_NAME` / `CHARSET_NAME`
+  与 `locate_model_dir()`；引擎中文名与 `describe_engines()` 的
+  `display_name` 也必须一致。
+* **可用性判定不许比引擎更乐观**（`TestVerdictAgainstEngines`）：启动器说
+  「可用」的，`is_available()` 必须也说可用；环境齐全时两者要**逐引擎完全一致**。
+* 探测**真去 `__import__`**，不用 `importlib.util.find_spec`：装入一半
+  （DLL 缺失、依赖不全）的包 `find_spec` 照样返回路径，于是启动器报「可用」、
+  引擎报「不可用」—— 正是本节要消灭的那种分歧。
+* 多个模块**合并到一个子进程**探完（Windows 上解释器冷启动本身 ~0.5 s，
+  逐个起进程会让每次启动多等好几秒）；`probe_modules` 的结果用带标记的前缀
+  打印再解析，避免被测模块自己往 stdout 写日志时污染 JSON。
+
+### 2.4 踩到并绕开的一个坑：`@dataclass` 在按路径加载时炸
+
+第一版用的是 `@dataclass(frozen=True)`，结果**测试直接红了**：
+
+```text
+AttributeError: 'NoneType' object has no attribute '__dict__'
+  dataclasses.py, in _is_type:  ns = sys.modules.get(cls.__module__).__dict__
+```
+
+`start.bat` 与 `tests/test_launch_env.py::_load_launcher` 都是
+`spec_from_file_location` + `exec_module` 这种**按文件路径**的加载方式，
+它不把模块注册进 `sys.modules`；而 `@dataclass` 在装饰期要读
+`sys.modules[cls.__module__]`。实测确认 `NamedTuple` 与
+`collections.namedtuple` 都没这个问题，于是三个值对象全部改用 `NamedTuple`
+—— 一个连自己都起不来的启动器，比不完善的启动器糟糕得多。
+（同时把测试的加载器按标准写法补上了 `sys.modules` 注册。）
+
+### 2.5 顺带修的小事
+
+* `start.bat` 头部注释里写着 `v2.3.6`，而项目已经到 2.7.x。现在**不写版本号**了，
+  真实版本由 Python 在启动时打印 —— 一个放在「用户会双击的文件」里的过期版本号，
+  比没有更糟。头部同时补上了 `doctor` 的说明。
+* 引擎表的对齐：`lpr engines` 用的是朴素的 `f"{name:<16}"`，中文按字符数算宽度，
+  所以列是歪的。启动器这边用 `unicodedata.east_asian_width` 算了**显示宽度**，
+  新增的表就是齐的。
+
+## 三、验证
+
+* `tools/launcher.py` 仍然只依赖标准库（`json` / `unicodedata` / `typing`
+  都是标准库，守卫测试新增前后都通过）。
+* 真实环境端到端跑过：`start.bat doctor` → **4 个引擎全部可用**，退出码 0；
+  `start.bat engines` → 第 4 步打印「全部可用：传统 CV 引擎 / 深度学习引擎 /
+  检测识别引擎 / 三合一引擎」，随后正常启动。
+* 四种降级场景用**假项目根**验证（不动真实 `models/`）：无 yolo 权重 /
+  有权重但缺 `onnxruntime` / 运行库全缺 / `cv` 的 `svm.dat` 丢失 ——
+  判定与修复命令都符合预期。
+* 新增 **33 项**测试（`tests/test_launch_env.py` 31 → 64 项），全量 pytest
+  **1110 项**全绿。
+
+## 四、仍然没做
+
+* **没有 Windows 之外的启动脚本**。`start.sh`（Linux / macOS 一键启动）这次没做 ——
+  用户只要求补模型自检。`tools/launcher.py` 本身是跨平台的（`venv_python()`
+  已经区分 `Scripts/` 与 `bin/`），缺的只是一个 shell 引导壳。
+* **不做「缺权重就自动下载」**。权重有许可与哈希校验的要求，
+  自动下载会把「从哪来、可不可信」这件事藏起来。现在的做法是给出确切命令，
+  让用户显式执行 `tools/fetch_yolo_weights.py`。
+* 判定只看默认权重路径（`models/`）。用 `engine.yolo_models_dir` 把权重放别处时，
+  体检仍会报「不可用」。这不是启动器独有的 —— `yolo_engine.is_available()` 这个
+  类方法（`lpr engines` 也走它）同样只认默认目录，是注册表视角的固有边界。

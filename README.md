@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.7.0（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.7.1（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -44,6 +44,10 @@
 > 失败按环节拆解、两项附加实验 —— 结论见
 > [docs/ACCURACY.md](docs/ACCURACY.md)（简版：没有全能引擎；融合目前不提升
 > 识别率；`auto` 的硬编码偏好已在 CCPD 上倒退 4 张，已改为可配置）。
+> **v2.7.1 把启动器补完**：原先它只探测 Python 依赖，权重缺失时照样打印
+> 「均已就绪」——用户看到的是界面里那行「（不可用）」。现在每次启动都会报
+> 模型权重与四个引擎的可用性，并新增只读体检入口 `start.bat doctor`，
+> 每条不可用都附确切的修复命令（见下方「四种启动方式」）。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -222,13 +226,29 @@ lpr predict ./photos/ --engine deep --mask --report out/   # 报告落盘同样�
 双击 start.bat
 ```
 
-脚本会自动走四步：
+脚本会自动走五步：
 
 1. **找解释器**：`LPR_PYTHON` 环境变量 → 项目内 `.venv` → `py -3` → `python`；
 2. **校验版本**：低于 3.10 直接报错退出（而不是抛一堆 `ImportError`）；
 3. **补齐依赖**：探测 **numpy / OpenCV / Pillow / PySide6 四项**是否齐全，
    缺则装 `-e ".[deep,gui]"`（核心库 + 深度引擎 + 界面，约 200 MB，只在首次）；
-4. **启动**：无参数开界面，有参数透传给命令行。
+4. **自检模型权重与引擎**：看 `models/` 下的权重、逐个探测引擎后端
+   （`rapidocr_onnxruntime` / `paddleocr` / `onnxruntime`），报出四个引擎谁可用；
+5. **启动**：无参数开界面，有参数透传给命令行。
+
+第 4 步只说事实，**不阻断启动**：缺了 `yolo` 的权重只是这个引擎不可用，界面和
+其余引擎照常。它每次都会打印一行结论，例如：
+
+```text
+[4/5] 模型权重与引擎
+      可用：传统 CV 引擎 / 深度学习引擎 / 三合一引擎
+      不可用：检测识别引擎 —— 未安装 onnxruntime（检测推理后端）；缺少模型权重：models/yolo/plate_det.onnx
+              修复：pip install -e ".[yolo]"
+                    python tools/fetch_yolo_weights.py --list          # 已知来源与许可
+                    python tools/fetch_yolo_weights.py --github <owner/repo> --asset "*det*.onnx"
+      失去的只是对应引擎，界面与其他引擎照常可用；
+      要看完整报告执行：start.bat doctor
+```
 
 缺依赖时**装进项目内的 `.venv`**，不会往你系统里已有的 Python 塞包；如果那个
 解释器本来就齐全，则直接复用、不重复下载。第二次双击复用 `.venv`，秒开。
@@ -255,6 +275,39 @@ start.bat engines                                :: 查看引擎状态
 start.bat predict car.jpg --engine deep          :: 单图识别
 start.bat --help                                 :: 命令行用法
 ```
+
+**`start.bat doctor` —— 只体检，不启动**
+
+环境不对劲时（下拉框里某个引擎写「（不可用）」、装完依赖仍报缺模块），先跑它。
+它把**解释器 / 运行依赖 / 模型权重 / 四个引擎**一次列全，每条不可用都附修复命令：
+
+```bat
+start.bat doctor          :: 也可以写 --doctor 或 --check
+```
+
+```text
+运行依赖
+  [ok] numpy                  可用     运行库（必需）
+  [ok] cv2                    可用     运行库（必需）
+  [ok] PIL                    可用     运行库（必需）
+  [ok] PySide6                可用     图形界面（必需）
+  [ok] rapidocr_onnxruntime   可用     deep 的默认识别后端（推荐，轻量）
+  [--] paddleocr              未安装   deep 的备选识别后端（更大更慢），未安装不影响
+  [!!] onnxruntime            不可用   yolo 的唯一硬依赖（默认安装规格不含）
+
+模型权重
+  [ok] SVM 分类器（字母数字）         4.38 MB   models/svm.dat
+  [ok] 车牌检测网络（bbox + 四角点）  未提供    models/yolo/plate_det.onnx
+        python tools/fetch_yolo_weights.py --list          # 已知来源与许可
+  [--] 车牌字符识别（可选）           未提供    models/yolo/plate_rec.onnx
+```
+
+两条刻意的设计：
+
+- **只读**：不建 `.venv`、不装包、不改任何文件，所以环境已经坏掉时也能放心跑；
+  四个引擎全部可用时退出码 0，否则为 1（便于脚本判断）。
+- **不制造假警报**：可选的东西缺了标 `[--]`（例如只装了 `rapidocr` 没装
+  `paddleocr`），只有真正拖垮了某个引擎才会标 `[!!]`。
 
 两个环境变量可覆盖默认行为：
 
@@ -464,7 +517,7 @@ src/lpr/
     ├── security.py     # 安全层：Limits / PrivacyPolicy / 脱敏 / 限流 / 模型校验三态
     └── logging_setup.py
 tools/
-├── launcher.py               # 启动器：找解释器 / 建 .venv / 装依赖 / 启动（只依赖标准库）
+├── launcher.py               # 启动器：找解释器 / 建 .venv / 装依赖 / 权重与引擎自检 / 启动（只依赖标准库）
 ├── no-python.txt             # 找不到 Python 时的中文提示（UTF-8，由 start.bat 用 type 输出）
 ├── benchmark.py              # 引擎性能基准（耗时/QPS/命中率）
 ├── bench_workers.py          # 多进程批量加速基准（含纯 CPU 并行对照）
@@ -487,7 +540,8 @@ models/                 # 预训练 SVM 模型（原版权重，config.json 内�
 models/yolo/            # 检测识别引擎权重放置目录（自带说明，权重需自行准备）
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
-tests/                  # 1077 项 pytest 测试（含 tests/baselines/ 行为基线）
+                        #   加 doctor 参数为只读环境体检
+tests/                  # 1110 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
 docs/ACCURACY.md        # 准确率实测与提升路线（v2.7.0）
@@ -498,7 +552,7 @@ docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 1077 项单元/集成测试
+pytest tests/ -q                                    # 1110 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -561,6 +615,12 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 - **Python API 的 `engine` 参数默认是 `"auto"`，不读 `config.engine.default`**：
   想让 API 也用配置里的默认引擎（例如 `fusion`），要显式传
   `Recognizer(engine=config.engine.default)`；CLI 与 GUI 都是显式传的，不受影响
+- **`doctor` 与启动器的引擎判定只看默认权重路径**：它检查的是
+  `models/svm*.dat` 与 `models/yolo/plate_det.onnx`（即 `EngineConfig` 的默认值）。
+  如果你用 `engine.yolo_models_dir` 之类的配置把权重放到别处，启动器仍会报
+  「不可用」——因为 `yolo_engine.is_available()` 这个**类方法**同样只认默认目录
+  （`lpr engines` 也走它）。这不是启动器独有的毛病，是注册表视角的固有边界；
+  实际 `predict` 时用的是实例自己解析的路径，能正常跑
 - **`yolo` 引擎的权重不进仓库**（体积 + 许可双重原因），所以装完 extras 后它
   **大概率是「可见但不可用」**：推理链路已完整实现并有测试，但没权重就跑不了。
   此时加载会抛一条带**绝对路径**和**安装命令**的 `EngineUnavailable`，照着做即可。

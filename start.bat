@@ -1,11 +1,22 @@
 @echo off
 rem ============================================================
-rem  License Plate Recognition v2.3.6 - Windows launcher (ASCII shell)
+rem  License Plate Recognition - Windows launcher (ASCII shell)
 rem
 rem  Double-click   -> open the GUI
 rem  With arguments -> forwarded to the CLI, e.g.
 rem      start.bat engines
 rem      start.bat predict car.jpg --engine deep
+rem
+rem  start.bat doctor   -> read-only environment check: interpreter,
+rem                        runtime deps, model weights, per-engine
+rem                        availability.  It never creates a venv,
+rem                        never installs anything, never launches.
+rem                        Aliases: --doctor, --check
+rem
+rem  No version number is written here on purpose: it used to say
+rem  v2.3.6 while the project was already at 2.7.x, and a stale
+rem  version in the file people double-click is worse than none.
+rem  The real version is printed by tools/launcher.py at startup.
 rem
 rem  THIS FILE MUST STAY PURE ASCII - that is a hard requirement, not a
 rem  style choice.  cmd.exe computes the offset of the next batch line
@@ -20,11 +31,12 @@ rem  lands inside the next line's leading spaces - our own 6-line probe
 rem  passed for exactly that reason.
 rem
 rem  Therefore all user-facing text (banner, version check, .venv and
-rem  pip work, Chinese errors) lives in tools/launcher.py, which Python
-rem  prints through WriteConsoleW - independent of the console codepage
-rem  (65001 or 936, same result).  `chcp 65001` below only exists so the
-rem  Chinese fallback message in tools/no-python.txt renders correctly
-rem  when we could not find any Python at all.
+rem  pip work, model-weight report, Chinese errors) lives in
+rem  tools/launcher.py, which Python prints through WriteConsoleW -
+rem  independent of the console codepage (65001 or 936, same result).
+rem  `chcp 65001` below only exists so the Chinese fallback message in
+rem  tools/no-python.txt renders correctly when we could not find any
+rem  Python at all.
 rem
 rem  Environment overrides (consumed by tools/launcher.py):
 rem      LPR_PYTHON    force a specific interpreter
