@@ -74,12 +74,32 @@ def current() -> dict:
     return snapshot()
 
 
+def _by_path(records: list[dict]) -> dict[str, dict]:
+    """按路径建索引。逐张对照必须靠它配对，不能靠位置。"""
+    return {rec["path"]: rec for rec in records}
+
+
 def test_baseline_covers_repo_samples(baseline, current):
-    """基线与当前快照必须覆盖同一批样张，否则等于没测。"""
+    """基线与当前快照必须覆盖同一批样张，否则等于没测。
+
+    这条**故意**对新增样张也报错：加了图就要重新生成基线，不然下面几条逐张
+    对照会失去意义。所以错误信息里直接把多出来/缺了哪些列出来，省得自己 diff。
+    """
     want = [r["path"] for r in baseline["records"]]
     got = [r["path"] for r in current["records"]]
-    assert want == got, "样张清单变了（新增/删除了样张？需要重新生成基线）"
     assert want, "基线里一条记录都没有"
+    if want != got:
+        added = sorted(set(got) - set(want))
+        removed = sorted(set(want) - set(got))
+        detail = []
+        if added:
+            detail.append(f"多出 {len(added)} 张（前 5 张）：{added[:5]}")
+        if removed:
+            detail.append(f"缺少 {len(removed)} 张（前 5 张）：{removed[:5]}")
+        pytest.fail(
+            "样张清单变了（新增/删除了样张？确认无误后重新生成基线："
+            "`python tools/make_regression_baseline.py --write`）：\n  " + "\n  ".join(detail)
+        )
 
 
 def test_all_repo_samples_readable(current):
@@ -88,19 +108,36 @@ def test_all_repo_samples_readable(current):
     assert not broken, f"这些样张读不出来: {broken}"
 
 
-def test_locate_still_finds_candidates(current):
-    """定位器在真实样张上必须仍能找到候选（防止整体失效）。"""
-    no_cand = [r["path"] for r in current["records"] if r.get("readable") and not r.get("top_bbox")]
+def test_locate_still_finds_candidates(baseline, current):
+    """基线里那批样张必须仍能找到候选（防止定位器整体失效）。
+
+    只查**基线覆盖过**的样张：``img/`` 下后来多出来的本地图片不属于"项目承诺
+    保持稳定"的那批，某张随手拍的车流照定位不到车牌不是回归。
+    """
+    now_by_path = _by_path(current["records"])
+    no_cand = []
+    for rec in baseline["records"]:
+        now = now_by_path.get(rec["path"])
+        if now is not None and now.get("readable") and not now.get("top_bbox"):
+            no_cand.append(rec["path"])
     assert not no_cand, f"这些样张定位不到任何候选: {no_cand}"
 
 
 class TestBehaviorUnchanged:
-    """逐张对照基线与当前行为。"""
+    """逐张对照基线与当前行为。
+
+    必须按**路径**配对，不能按位置 ``zip`` —— 位置配对只要样张数量一变，
+    就变成"图 A 的基线" 比 "图 B 的现状"，报出一屏假漂移把真信号埋掉。
+    （v2.7.3 实测踩到：``img/`` 被塞进 193 张本地图后，11 张真样张全部报 IoU≈0，
+    而按路径逐张复算的 IoU 全是 1.000。）
+    """
 
     def test_top_bbox_not_drifted(self, baseline, current):
+        now_by_path = _by_path(current["records"])
         drifted = []
-        for base, now in zip(baseline["records"], current["records"], strict=False):
-            if not base.get("top_bbox") or not now.get("top_bbox"):
+        for base in baseline["records"]:
+            now = now_by_path.get(base["path"])
+            if now is None or not base.get("top_bbox") or not now.get("top_bbox"):
                 continue
             iou = _iou(base["top_bbox"], now["top_bbox"])
             if iou < MIN_IOU:
@@ -112,18 +149,25 @@ class TestBehaviorUnchanged:
         )
 
     def test_candidate_count_not_drifted(self, baseline, current):
+        now_by_path = _by_path(current["records"])
         drifted = []
-        for base, now in zip(baseline["records"], current["records"], strict=False):
+        for base in baseline["records"]:
+            now = now_by_path.get(base["path"])
+            if now is None:
+                continue
             delta = abs(base["n_candidates"] - now["n_candidates"])
             if delta > CAND_TOLERANCE:
                 drifted.append(f"{base['path']}: {base['n_candidates']} -> {now['n_candidates']}")
         assert not drifted, "候选数量发生明显变化：\n  " + "\n  ".join(drifted)
 
     def test_top_color_not_drifted(self, baseline, current):
+        now_by_path = _by_path(current["records"])
         drifted = []
-        for base, now in zip(baseline["records"], current["records"], strict=False):
-            if base.get("top_color") != now.get("top_color"):
-                drifted.append(f"{base['path']}: {base.get('top_color')} -> {now.get('top_color')}")
+        for base in baseline["records"]:
+            now = now_by_path.get(base["path"])
+            if now is None or base.get("top_color") == now.get("top_color"):
+                continue
+            drifted.append(f"{base['path']}: {base.get('top_color')} -> {now.get('top_color')}")
         assert not drifted, "top 候选底色判定变了：\n  " + "\n  ".join(drifted)
 
 

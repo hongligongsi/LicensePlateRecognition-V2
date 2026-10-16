@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 #: 与 pyproject.toml / cli.py / config.py 保持一致
-VERSION = "2.7.2"
+VERSION = "2.7.3"
 #: 低于此版本直接拒绝（Qt 6 与 typing 语法都需要）
 MIN_PY = (3, 10)
 #: 核心运行库 + 界面库，四项缺一不可
@@ -687,6 +687,47 @@ def _make_pipes_utf8() -> None:
             stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
 
+# ────────────────────────────────────────────────────────────────
+# 运行日志的去处
+# ────────────────────────────────────────────────────────────────
+
+#: 读不出 ``config.json`` 时的兜底目录 —— 必须与 ``lpr.config.Config.log_dir``
+#: 的默认值一致（有测试交叉校验），否则启动器就成了第二个「假真相」。
+DEFAULT_LOG_DIR = "logs"
+
+
+def _truthy(value: object) -> bool:
+    """宽松地读 JSON/字符串布尔：``false`` / ``"0"`` / ``"off"`` 都算假。
+
+    启动器不许 import ``lpr``（只依赖标准库），所以这几个字段的解析
+    在 ``lpr.config`` 里另有一份 —— 用测试钉住两边一致。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def log_target(root: Path = ROOT) -> Path | None:
+    """本项目的日志目录；配置里关掉了文件日志时返回 ``None``。
+
+    刻意不猜：用户改过 ``config.json`` 就用他的值，只有读不出文件时才回落到
+    与 ``Config`` 相同的默认目录。返回 ``None`` 时不打印任何"日志在哪儿"的
+    提示 —— 说一个不存在的地方，比不说更糟。
+    """
+    try:
+        raw = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return root / DEFAULT_LOG_DIR
+    if not isinstance(raw, dict):
+        return root / DEFAULT_LOG_DIR
+    if not _truthy(raw.get("log_to_file", True)):
+        return None
+    name = str(raw.get("log_dir", "")).strip()
+    return root / name if name else None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
@@ -798,6 +839,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print()
 
     print("[5/5] 正在启动...")
+    if (target_log := log_target(ROOT)) is not None:
+        print(f"      运行日志：{target_log}（出问题时把最新的 .log 一并反馈）")
     print()
     code = launch(target, args, ROOT)
     if code != 0:

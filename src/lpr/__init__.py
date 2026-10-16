@@ -30,7 +30,7 @@ from .plate_rules import correct, is_valid, plate_score
 from .plate_rules import describe as describe_plate
 from .tracker import MultiPlateTracker, merge_same_image
 from .types import COLOR_NAMES, PlateColor, PlateResult, parse_color
-from .utils.logging_setup import setup_logging
+from .utils.logging_setup import current_log_file, log_file_path, setup_logging
 from .utils.security import (
     Limits,
     PrivacyPolicy,
@@ -42,7 +42,7 @@ from .utils.security import (
 
 #: 版本号唯一来源。``cli.VERSION``、界面标题、状态栏都从这里取，
 #: 不再各自维护字面量（v2.3.9 之前这里停在 2.3.1，与 pyproject 各说各话）。
-__version__ = "2.7.2"
+__version__ = "2.7.3"
 
 __all__ = [
     "COLOR_NAMES",
@@ -68,10 +68,13 @@ __all__ = [
     "available_engines",
     # 规则与跟踪
     "correct",
+    "current_log_file",
     "describe_engines",
     "describe_plate",
     "get_engine",
     "is_valid",
+    # 日志
+    "log_file_path",
     # 安全工具
     "mask_plate",
     "merge_same_image",

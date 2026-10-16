@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -33,8 +34,14 @@ from lpr.utils.image import imwrite
 
 @pytest.fixture
 def force_parallel(monkeypatch):
-    """把"值得并行"的门槛降到 1，让端到端测试真的走多进程路径。"""
+    """把"值得并行"的门槛降到 1，让端到端测试真的走多进程路径。
+
+    同时用环境变量关掉文件日志：子进程会各自建 ``logs/lpr-*-p<pid>.log``，
+    测试跑一遍就往仓库里丢一堆日志文件。关掉它们顺带也验证了
+    ``LPR_LOG_FILE=0`` 这条开关真的能生效。
+    """
     monkeypatch.setattr("lpr.batch.MIN_FILES_PER_WORKER", 1)
+    monkeypatch.setenv("LPR_LOG_FILE", "0")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -305,6 +312,44 @@ def test_parallel_single_worker_path_still_serial(image_set):
 
 def test_run_parallel_empty_input():
     assert run_parallel([], "cv", Config().to_payload(), 4) == []
+
+
+def test_worker_process_writes_its_own_log_file(monkeypatch):
+    """子进程日志按 pid 分文件。
+
+    多进程共写一个文件时，``RotatingFileHandler`` 轮转要重命名文件，
+    而 Windows 上重命名一个仍被别的进程打开的文件会抛 ``PermissionError``
+    —— 跑量大的批次里会随机炸。同时子进程的日志此前**完全丢失**
+    （spawn 出来的新解释器上没有 handler），初始化失败时用户什么都看不到。
+    """
+    seen: dict[str, object] = {}
+
+    def fake_setup(**kwargs):
+        seen.update(kwargs)
+
+    class FakeRecognizer:
+        def __init__(self, engine: str, config: Config) -> None:
+            self.engine = engine
+            self.config = config
+
+    import lpr.api
+    import lpr.batch as batch_mod
+    import lpr.utils.logging_setup as logging_mod
+
+    monkeypatch.setattr(logging_mod, "setup_logging", fake_setup)
+    monkeypatch.setattr(lpr.api, "Recognizer", FakeRecognizer)
+
+    payload = Config().to_payload()
+    batch_mod._WORKER.clear()
+    try:
+        batch_mod._init_worker("cv", payload)
+
+        assert seen["tag"] == f"-p{os.getpid()}"
+        assert seen["log_dir"] == payload["log_dir"]
+        assert seen["level"] == payload["log_level"]
+        assert isinstance(batch_mod._WORKER.get("rec"), FakeRecognizer)
+    finally:
+        batch_mod._WORKER.clear()
 
 
 @pytest.mark.slow

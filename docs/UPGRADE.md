@@ -2397,3 +2397,114 @@ CLAHE / CLAHE+3x / 直方图均衡 / OTSU / 去噪+3x）送进**同一个**识�
 * 两套主题用离屏渲染各截一张图人工核验（布局/配色/车牌皮肤正常；
   离屏环境缺中文字体，文字显示为方块是环境问题不是代码问题）。
 * 全量 pytest、ruff、mypy 全绿（计数见 README）。
+
+---
+
+# v2.7.3 —— 运行日志落盘，以及一个被日志揪出来的测试脆弱点
+
+用户一句话反馈：「没有运行日志」。查下去发现是**两个**独立的问题，
+而且第二个比第一个严重 —— 界面里那个「运行日志」面板**从来没工作过**。
+
+## 一、运行日志：从"只打 stderr"到"三个出口"
+
+### 1.1 原来的样子
+
+`setup_logging()` 只装两个 handler：`StreamHandler(stderr)` 和一个给界面用的
+内存环形缓冲。于是：
+
+* **程序一关，日志就没了**。用户报障时手上没有任何证据 —— 而"权重缺失导致
+  yolo 不可用"这类问题恰恰需要看历史日志才知道发生过；
+* **界面「运行日志」面板永远空白**。`setup_logging` 只在 `cli.py` 里被调过
+  （而且只有 `predict` / `video` 两条路径），**GUI 入口 `run_ui()` 从没调过它**。
+  后果不只是面板空：`logger.propagate` 也一直是默认的 `True`，日志顺着根
+  logger 走，INFO 级被直接丢掉（只有 WARNING 以上会经 `lastResort` 打到 stderr）；
+* **多进程子进程的日志完全丢失**。`batch.py` 用 `spawn` 起子进程，新解释器上
+  没有 handler，子进程里 `logger.error("子进程初始化失败: ...")` 这类信息
+  没人接。
+
+### 1.2 现在
+
+`src/lpr/utils/logging_setup.py` 增加文件出口，并补齐三个入口的接线：
+
+* **文件出口**：`logs/lpr-YYYYMMDD.log`，`RotatingFileHandler` 按 `log_max_mb`
+  （默认 5MB）轮转、保留 `log_backups`（默认 5）份；
+* **幂等语义明确**：`setup_logging` 第二次调用直接返回（此前会**重设 level**，
+  于是 `main()` 用 `--log-level DEBUG` 配好之后，`cmd_predict` 里那句
+  `setup_logging(cfg.log_level)` 会把它悄悄改回配置文件里的 INFO）；
+  要重建用 `force=True`，`close_logging()` 负责关句柄（测试收尾与运行期换日志用）；
+* **写不进去就降级**：目录只读 / 磁盘满 / 被占用 → 打一行警告、只保留控制台，
+  **绝不抛异常**。真正需要日志的时刻，恰恰是环境已经不正常的时候；
+* **第一行告诉你日志在哪**：`运行日志 → <绝对路径>`。用 `absolute()` 而不是
+  `resolve()` —— 后者在 Windows 上会返回 `C:/Users/HONGLI~1/...` 这种 8.3 短名；
+* **子进程按 pid 分文件**：`-p<pid>.log`。不是洁癖：多个进程轮流轮转同一个
+  文件时，Windows 上重命名一个仍被别的进程打开的文件会抛 `PermissionError`，
+  跑量大的批次里会随机炸；顺带还解决了"哪个进程读了哪张图"。
+
+### 1.3 配置与命令行
+
+`config.json` 顶层新增 `log_to_file` / `log_dir` / `log_max_mb` / `log_backups`，
+并新增 `Config.logging_kwargs()` 统一转成 `setup_logging` 的入参（三个入口共用，
+避免各自记一遍字段名）。手改 JSON 的宽松解析：`"log_to_file": "false"` 当假、
+`log_max_mb: 0` 夹到 1、`log_backups: "abc"` 保持默认 —— 日志设置不值得让配置加载失败。
+
+新增 `--log-level` / `--log-dir` / `--no-log-file`，**同时挂在主命令和每个子命令上**：
+
+```
+lpr --log-level DEBUG predict a.jpg     # 选项写在子命令前
+lpr predict a.jpg --log-level DEBUG     # 选项写在子命令后
+```
+
+两种写法都生效，靠的是子命令那份用 `argparse.SUPPRESS` 当默认值 —— 否则
+子命令解析时会用 `None` 把主命令填好的值覆盖掉（argparse 的经典坑）。
+
+### 1.4 界面
+
+* `run_ui()` 里补上 `setup_logging`（就是上面那个"从没调过"的洞）；
+* 「运行日志」面板**修掉一个真 bug**：原来刷新判据是"行数没变就不再重绘"，
+  而缓冲只有最近 20 行 —— 攒够 20 行之后行数恒定，面板**永久冻住**。
+  改成用内容快照判重，并把显示上限提到 200 行；
+* 面板下面增加一行**日志文件路径**（可选中复制）与「打开日志目录」按钮；
+  `_open_directory()` 在打不开文件管理器时只降级为一句说明（把路径显示出来），
+  不抛异常。
+
+### 1.5 启动器
+
+`start.bat` 的第 5 步会打印日志目录。目录是从 `config.json` 的 `log_dir` 读的，
+读不出来才回落到默认 `logs/`（与 `Config.log_dir` 的默认值有测试交叉校验）；
+配置里关掉了文件日志就**什么都不打印** —— 指一个不存在的地方比不说更糟。
+
+## 二、顺手修掉：回归基线测试的"按位置配对"
+
+跑全量时 `tests/test_regression_baseline.py` 红了 6 条，一度怀疑是这次改动
+动了定位。逐张按**路径**复算后证明是虚惊：11 张基线样张的 IoU 全是 **1.000**，
+候选数与底色一字不差。
+
+真正的原因是测试自己：三条"逐张对照"用的是
+
+```python
+for base, now in zip(baseline["records"], current["records"], strict=False):
+```
+
+**按位置**配对。只要 `img/` 下多出文件，就变成"图 A 的基线"比"图 B 的现状"，
+于是报出一屏 IoU≈0 的假漂移，把真信号彻底埋掉。本次环境里 `img/` 多出了
+192 张本地图片（见下），正好踩中。
+
+改成按路径索引配对，并让 `test_locate_still_finds_candidates` 只查基线覆盖过的
+那批样张（`img/` 里后来多的随手拍车流照定位不到车牌不算回归）。
+`test_baseline_covers_repo_samples` 这条**故意保持会失败** —— 它是"样张清单
+变了就该重新生成基线"的绊线，只把报错信息改成直接列出多了/缺了哪些。
+
+> 附带发现：`img/` 目录里现在有 202 个文件（其中 192 个不在基线内、也不在 git 里），
+> 总体积 61.4MB，超过了"样张总体积 < 40MB"这条 CI 预算。数据是否保留由使用者决定，
+> 这里只保证**测试能说清问题**，不擅自删文件。
+
+## 三、验证
+
+* 新增 **60 项**测试（`tests/test_logging_setup.py`：落盘与轮转、写失败降级、
+  幂等与 force 重建、级别解析、配置与命令行接线、脱敏贯通到文件、
+  界面日志面板回归），`test_launch_env.py` +8、`test_batch_parallel.py` +1，
+  总数 1126 → **1195**；
+* `ruff` / `mypy` 全绿；全量 pytest **1193 / 1195** 通过 —— 剩的 2 条红是
+  `img/` 被塞了 192 张本地图导致的（样张清单与 40MB 预算），属**数据问题**，
+  不是代码问题：11 张基线样张的定位行为逐张复算 IoU 全为 1.000；
+* 实机抓了一段真实日志贴进 README §3.8（含 `--workers 2` 产生的子进程文件）。

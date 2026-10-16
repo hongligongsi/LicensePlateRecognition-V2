@@ -39,7 +39,7 @@ from .engines import describe_engines
 from .plate_rules import correct, is_valid
 from .plate_rules import describe as describe_plate
 from .types import parse_color
-from .utils.logging_setup import setup_logging
+from .utils.logging_setup import LEVEL_CHOICES, setup_logging
 from .utils.security import SecurityError, mask_plate, model_info
 
 PROG = "lpr"
@@ -47,19 +47,53 @@ PROG = "lpr"
 VERSION = __version__
 
 
+def _logging_options() -> argparse.ArgumentParser:
+    """``--log-*`` 三个开关，同时挂到主命令和每个子命令上。
+
+    ``default=argparse.SUPPRESS`` 是刻意的：子命令解析时不会用默认值去**覆盖**
+    主命令已经填好的值，于是下面两种写法都能生效::
+
+        lpr --log-level DEBUG predict a.jpg     # 选项写在子命令前
+        lpr predict a.jpg --log-level DEBUG     # 选项写在子命令后
+    """
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument(
+        "--log-level",
+        default=argparse.SUPPRESS,
+        choices=list(LEVEL_CHOICES),
+        metavar="LEVEL",
+        help=f"日志级别（{'/'.join(LEVEL_CHOICES)}；默认取配置文件 / LPR_LOG_LEVEL）",
+    )
+    ap.add_argument(
+        "--log-dir",
+        default=argparse.SUPPRESS,
+        metavar="DIR",
+        help="日志文件目录（默认 logs/；传空串表示不写文件）",
+    )
+    ap.add_argument(
+        "--no-log-file",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="只输出到控制台，不写日志文件",
+    )
+    return ap
+
+
 def _make_parser() -> argparse.ArgumentParser:
+    log_opts = _logging_options()
     parser = argparse.ArgumentParser(
         prog=PROG,
         description="中国车牌识别 v2.3 —— 双引擎 + 定位引导加速 + 全类型车牌支持",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+        parents=[log_opts],
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ---------------------------------------------------------- predict
-    p = sub.add_parser("predict", help="识别图片（单张/目录）")
+    p = sub.add_parser("predict", help="识别图片（单张/目录）", parents=[log_opts])
     p.add_argument("inputs", nargs="+", help="图片路径或目录")
     p.add_argument(
         "--engine",
@@ -101,7 +135,7 @@ def _make_parser() -> argparse.ArgumentParser:
     )
 
     # ---------------------------------------------------------- video
-    p = sub.add_parser("video", help="识别视频文件或摄像头")
+    p = sub.add_parser("video", help="识别视频文件或摄像头", parents=[log_opts])
     p.add_argument("input", help="视频路径，或摄像头编号（如 0）")
     p.add_argument("--engine", default=None, choices=["auto", *ENGINE_CHOICES])
     p.add_argument("--stride", type=int, default=10, help="每 N 帧识别一次（默认 10）")
@@ -109,22 +143,22 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--mask", action="store_true", help="输出中打码")
 
     # ---------------------------------------------------------- gui
-    sub.add_parser("gui", help="启动图形界面")
+    sub.add_parser("gui", help="启动图形界面", parents=[log_opts])
 
     # ---------------------------------------------------------- engines
-    sub.add_parser("engines", help="查看可用引擎状态")
+    sub.add_parser("engines", help="查看可用引擎状态", parents=[log_opts])
 
     # ---------------------------------------------------------- check
-    p = sub.add_parser("check", help="校验车牌号是否符合国家规范")
+    p = sub.add_parser("check", help="校验车牌号是否符合国家规范", parents=[log_opts])
     p.add_argument("plates", nargs="+", help="待校验的车牌号")
     p.add_argument("--fix", action="store_true", help="尝试自动纠正不合法的号码")
 
     # ---------------------------------------------------------- models
-    p_models = sub.add_parser("models", help="查看模型文件信息与完整性校验")
+    p_models = sub.add_parser("models", help="查看模型文件信息与完整性校验", parents=[log_opts])
     p_models.add_argument("--verify", action="store_true", help="执行 SHA256 完整性校验")
 
     # ---------------------------------------------------------- config
-    p_cfg = sub.add_parser("config", help="生成默认配置文件")
+    p_cfg = sub.add_parser("config", help="生成默认配置文件", parents=[log_opts])
     p_cfg.add_argument("--path", default=None, help="写入位置（默认 config.json）")
     p_cfg.add_argument("--show", action="store_true", help="只打印当前生效配置")
 
@@ -134,6 +168,21 @@ def _make_parser() -> argparse.ArgumentParser:
 # ══════════════════════════════════════════════════════════════════
 # 子命令实现
 # ══════════════════════════════════════════════════════════════════
+
+
+def _apply_log_cli(cfg: Config, args: argparse.Namespace) -> None:
+    """把 ``--log-*`` 开关叠到配置上。
+
+    优先级：**命令行 > 环境变量 > config.json > 内置默认值**
+    （``Config.load`` 已经处理过后两者，这里只补命令行这一层）。
+    选项全部用 ``SUPPRESS`` 默认值，所以没写的键在 ``args`` 上根本不存在。
+    """
+    if (level := getattr(args, "log_level", None)) is not None:
+        cfg.log_level = level
+    if (log_dir := getattr(args, "log_dir", None)) is not None:
+        cfg.log_dir = log_dir
+    if getattr(args, "no_log_file", False):
+        cfg.log_to_file = False
 
 
 def _build_recognizer(args, cfg: Config) -> Recognizer:
@@ -154,7 +203,7 @@ def _build_recognizer(args, cfg: Config) -> Recognizer:
 
 
 def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
-    setup_logging(cfg.log_level)
+    # 日志已在 main() 里统一初始化（幂等，这里不再重复调用）
     rec = _build_recognizer(args, cfg)
     rec.warmup()
 
@@ -248,7 +297,7 @@ def cmd_predict(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_video(args: argparse.Namespace, cfg: Config) -> int:
-    setup_logging(cfg.log_level)
+    # 日志已在 main() 里统一初始化（幂等，这里不再重复调用）
     rec = _build_recognizer(args, cfg)
     rec.warmup()
 
@@ -409,6 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cfg = Config.load()
+    _apply_log_cli(cfg, args)
+    # 日志在这里**统一**初始化。此前只有 predict / video 两条路径调过它，
+    # 于是 gui 的「运行日志」面板永远是空的、其他子命令的日志也没人接收。
+    setup_logging(**cfg.logging_kwargs())
     handlers = {
         "predict": cmd_predict,
         "video": cmd_video,

@@ -83,12 +83,29 @@ def parallel_is_worthwhile(n_items: int, workers: int) -> bool:
 
 
 def _init_worker(engine: str, config_payload: dict) -> None:
-    """子进程初始化：重建配置与识别器（每个进程只做一次）。"""
+    """子进程初始化：接上日志 → 重建配置 → 建识别器（每个进程只做一次）。"""
+    from .config import Config
+    from .utils.logging_setup import setup_logging
+
+    try:
+        cfg = Config.from_payload(config_payload)
+    except Exception as exc:  # pragma: no cover - 正常路径不会走到
+        # 连配置都还原不出来，只能退回默认日志设置，但至少把原因留下来
+        setup_logging(tag=f"-p{os.getpid()}")
+        logger.error("子进程配置还原失败: %s", exc)
+        _WORKER["error"] = str(exc)
+        return
+
+    # 子进程写**自己的**日志文件（文件名带 pid）。两个原因：
+    # 1. 多进程同时轮转同一个文件时，Windows 上重命名被别的进程打开的文件
+    #    会抛 ``PermissionError``；
+    # 2. 并行跑批时"哪个进程读了哪张图"本身就是排查时要的信息。
+    # 父进程的文件仍是主线索，子进程日志只在排查并行问题时才需要翻。
+    setup_logging(**cfg.logging_kwargs(tag=f"-p{os.getpid()}"))
+
     try:
         from .api import Recognizer
-        from .config import Config
 
-        cfg = Config.from_payload(config_payload)
         # 子进程只负责算号码，不需要 ROI 图像，省掉一次拷贝
         cfg.security.keep_roi = False
         _WORKER["rec"] = Recognizer(engine=engine, config=cfg)

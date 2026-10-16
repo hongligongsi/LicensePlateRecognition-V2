@@ -409,8 +409,31 @@ class Config:
     engine: EngineConfig = field(default_factory=EngineConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
-    #: 日志级别
+    #: 日志级别（DEBUG / INFO / WARNING / ERROR / CRITICAL）
     log_level: str = "INFO"
+    #: 是否把运行日志写入文件。关掉只剩控制台输出，关窗即丢
+    log_to_file: bool = True
+    #: 日志文件目录（相对当前工作目录）；为空串同样表示不写文件
+    log_dir: str = "logs"
+    #: 单个日志文件大小上限（MB），超出后轮转为 ``*.log.1`` 等
+    log_max_mb: int = 5
+    #: 保留的历史日志份数
+    log_backups: int = 5
+
+    def logging_kwargs(self, *, tag: str = "") -> dict:
+        """转成 :func:`lpr.utils.logging_setup.setup_logging` 的关键字参数。
+
+        CLI、界面、批量子进程三处入口共用，避免各自记一遍字段名
+        （此前只有 ``log_level`` 一个字段，漏传也只是静默降级）。
+        """
+        return {
+            "level": self.log_level,
+            "log_to_file": self.log_to_file,
+            "log_dir": self.log_dir,
+            "max_mb": self.log_max_mb,
+            "backups": self.log_backups,
+            "tag": tag,
+        }
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Config:
@@ -427,16 +450,20 @@ class Config:
             _apply_overrides(cfg.engine, raw.get("engine", {}))
             _apply_overrides(cfg.ui, raw.get("ui", {}))
             _apply_overrides(cfg.security, raw.get("security", {}))
-            if "log_level" in raw:
-                cfg.log_level = str(raw["log_level"])
+            _apply_log_fields(cfg, raw)
 
         # 环境变量优先级最高，便于临时调试
         if env_engine := os.getenv("LPR_ENGINE"):
             cfg.engine.default = env_engine
         if env_level := os.getenv("LPR_LOG_LEVEL"):
             cfg.log_level = env_level
-        if os.getenv("LPR_MASK_OUTPUT", "").lower() in ("1", "true", "yes"):
-            cfg.security.mask_output = True
+        if env_dir := os.getenv("LPR_LOG_DIR"):
+            cfg.log_dir = env_dir
+        if env_file := os.getenv("LPR_LOG_FILE"):
+            # 显式给了 LPR_LOG_FILE 就按它来（"0"/"off" 关掉），CI 里可彻底静音
+            cfg.log_to_file = _as_bool(env_file, cfg.log_to_file)
+        if env_mask := os.getenv("LPR_MASK_OUTPUT"):
+            cfg.security.mask_output = _as_bool(env_mask, cfg.security.mask_output)
 
         cfg.engine.validate()
         cfg.security.to_limits().validate()
@@ -462,6 +489,10 @@ class Config:
             "ui": _to_plain(self.ui),
             "security": _to_plain(self.security),
             "log_level": self.log_level,
+            "log_to_file": self.log_to_file,
+            "log_dir": self.log_dir,
+            "log_max_mb": self.log_max_mb,
+            "log_backups": self.log_backups,
         }
 
     @classmethod
@@ -472,8 +503,7 @@ class Config:
             _apply_overrides(cfg.engine, payload.get("engine", {}))
             _apply_overrides(cfg.ui, payload.get("ui", {}))
             _apply_overrides(cfg.security, payload.get("security", {}))
-            if "log_level" in payload:
-                cfg.log_level = str(payload["log_level"])
+            _apply_log_fields(cfg, payload)
         cfg.engine.validate()
         cfg.security.to_limits().validate()
         return cfg
@@ -516,6 +546,46 @@ def _coerce(value: Any, current: Any, ftype: Any) -> Any:
     if isinstance(current, float):
         return float(value)
     return value
+
+
+def _as_bool(value: Any, fallback: bool) -> bool:
+    """宽松地读布尔：``config.json`` 是给人手改的，``"0"`` / ``"off"`` 也算假。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return fallback
+
+
+def _as_int(value: Any, fallback: int, *, minimum: int) -> int:
+    """宽松地读整数并夹住下界；读不出来时保持默认值（日志设置不值得让配置加载失败）。"""
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _apply_log_fields(cfg: Config, raw: dict) -> None:
+    """落 5 个顶层日志字段（``log_level`` / ``log_to_file`` / ``log_dir`` / ...）。
+
+    单列一个函数是因为它们既出现在 ``config.json`` 顶层，也出现在
+    :meth:`Config.to_payload` 的字典里，两处必须用同一套宽松解析
+    （``_apply_overrides`` 只认 dataclass 字段，不认这些扁平键）。
+    """
+    if not raw:
+        return
+    if "log_level" in raw:
+        cfg.log_level = str(raw["log_level"])
+    cfg.log_to_file = _as_bool(raw.get("log_to_file"), cfg.log_to_file)
+    if "log_dir" in raw:
+        cfg.log_dir = str(raw["log_dir"])
+    cfg.log_max_mb = _as_int(raw.get("log_max_mb"), cfg.log_max_mb, minimum=1)
+    cfg.log_backups = _as_int(raw.get("log_backups"), cfg.log_backups, minimum=0)
 
 
 __all__ = [

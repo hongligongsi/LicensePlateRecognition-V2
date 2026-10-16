@@ -48,5 +48,9 @@
     "predict_timeout": 30.0,
     "max_qps": 20.0
   },
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "log_to_file": true,
+  "log_dir": "logs",
+  "log_max_mb": 5,
+  "log_backups": 5
 }

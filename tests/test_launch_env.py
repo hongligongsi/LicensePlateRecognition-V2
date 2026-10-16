@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -680,7 +681,8 @@ class TestStartupPreflight:
         return seen
 
     def test_reports_the_missing_weight_and_still_launches(self, tmp_path, monkeypatch, capsys):
-        seen = self._patch(monkeypatch, _fake_root(tmp_path, yolo=False))
+        root = _fake_root(tmp_path, yolo=False)
+        seen = self._patch(monkeypatch, root)
         assert LAUNCHER.main(["engines"]) == 0
         out = capsys.readouterr().out
         assert "[4/5] 模型权重与引擎" in out
@@ -689,7 +691,17 @@ class TestStartupPreflight:
         assert "start.bat doctor" in out
         # 关键：仍然启动了，且参数原样透传
         assert "[5/5] 正在启动..." in out
+        # 顺带告诉用户日志去哪儿找 —— 出问题时这一行就是排查入口
+        assert f"运行日志：{root / LAUNCHER.DEFAULT_LOG_DIR}" in out
         assert seen["args"] == ["engines"]
+
+    def test_no_log_hint_when_file_logging_is_off(self, tmp_path, monkeypatch, capsys):
+        """配置里关掉了文件日志就别提"运行日志" —— 指一个不存在的地方比不说更糟。"""
+        root = _fake_root(tmp_path)
+        (root / "config.json").write_text('{"log_to_file": false}', encoding="utf-8")
+        self._patch(monkeypatch, root)
+        LAUNCHER.main([])
+        assert "运行日志：" not in capsys.readouterr().out
 
     def test_says_all_available_when_nothing_is_missing(self, tmp_path, monkeypatch, capsys):
         self._patch(monkeypatch, _fake_root(tmp_path))
@@ -739,6 +751,51 @@ class TestStartupPreflight:
         monkeypatch.setattr(LAUNCHER, "doctor", lambda *a: 0)
         assert LAUNCHER.main(["doctor", "predict", "a.jpg"]) == 0
         assert "忽略多余参数" in capsys.readouterr().out
+
+
+class TestLogTarget:
+    """启动器要告诉用户日志在哪 —— 但读不出配置时不许编一个地方出来。
+
+    启动器只依赖标准库，没法 ``import lpr.config`` 去问，只能自己读
+    ``config.json``；这份解析与 ``lpr.config`` 里的那份必须对同一份配置
+    得出同一个结论，否则用户会按启动器指的方向去找不存在的文件。
+    """
+
+    def test_reads_log_dir_from_config(self, tmp_path):
+        root = _fake_root(tmp_path)
+        (root / "config.json").write_text(json.dumps({"log_dir": "mylogs"}), encoding="utf-8")
+        assert LAUNCHER.log_target(root) == root / "mylogs"
+
+    def test_disabled_file_logging_reports_nothing(self, tmp_path):
+        root = _fake_root(tmp_path)
+        (root / "config.json").write_text(json.dumps({"log_to_file": False}), encoding="utf-8")
+        assert LAUNCHER.log_target(root) is None
+
+    def test_loose_false_string_is_respected(self, tmp_path):
+        """config.json 是给人手改的，``"false"`` 得当假处理。"""
+        root = _fake_root(tmp_path)
+        (root / "config.json").write_text('{"log_to_file": "false"}', encoding="utf-8")
+        assert LAUNCHER.log_target(root) is None
+
+    def test_empty_log_dir_means_disabled(self, tmp_path):
+        root = _fake_root(tmp_path)
+        (root / "config.json").write_text(json.dumps({"log_dir": ""}), encoding="utf-8")
+        assert LAUNCHER.log_target(root) is None
+
+    def test_missing_config_falls_back_to_the_default_dir(self, tmp_path):
+        root = _fake_root(tmp_path)
+        assert LAUNCHER.log_target(root) == root / LAUNCHER.DEFAULT_LOG_DIR
+
+    def test_broken_config_falls_back_to_the_default_dir(self, tmp_path):
+        root = _fake_root(tmp_path)
+        (root / "config.json").write_text("{ 这不是 JSON", encoding="utf-8")
+        assert LAUNCHER.log_target(root) == root / LAUNCHER.DEFAULT_LOG_DIR
+
+    def test_default_dir_agrees_with_the_config_dataclass(self):
+        """两边各写一份默认值，漂移了启动器就指错地方（第二个"假真相"）。"""
+        from lpr.config import Config
+
+        assert Config().log_dir == LAUNCHER.DEFAULT_LOG_DIR
 
 
 class TestLauncherMessages:

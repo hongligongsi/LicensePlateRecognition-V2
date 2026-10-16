@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 import csv
+import os
+import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +60,12 @@ from ..config import Config
 from ..engines import describe_engines
 from ..types import PlateColor, PlateResult
 from ..utils.image import imread, to_display_rgb
-from ..utils.logging_setup import get_logger, memory_handler
+from ..utils.logging_setup import (
+    current_log_file,
+    get_logger,
+    memory_handler,
+    setup_logging,
+)
 from ..utils.security import (
     PrivacyPolicy,
     SecurityError,
@@ -68,6 +76,26 @@ from ..utils.security import (
 from .worker import CameraWorker, ImageWorker, list_cameras
 
 logger = get_logger("ui.window")
+
+
+def _open_directory(path: Path) -> str | None:
+    """用系统文件管理器打开目录，成功返回 ``None``，失败返回原因文本。
+
+    三平台各一条命令。任何异常都降级为"把路径显示给用户"而不是抛出去 ——
+    打不开文件管理器是小事，把界面弄崩是大事。
+    """
+    try:
+        if sys.platform.startswith("win"):
+            # Windows 上 os 有 startfile，Linux/macOS 的类型桩没有（attr-defined 报错）；
+            # 同时列出 unused-ignore 兼容两平台：只屏蔽自己这一行的"未使用"告警。
+            os.startfile(str(path))  # type: ignore[attr-defined, unused-ignore]
+            return None
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        subprocess.Popen([opener, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return None
+    except Exception as exc:  # pragma: no cover - 取决于运行环境
+        return str(exc)
+
 
 #: 颜色标签 → 文本色（用于历史表格等浅底场景）
 _LABEL_HEX = {
@@ -392,6 +420,8 @@ class MainWindow(QMainWindow):
         self._batch_done = 0
         self._batch_total = 0
         self._last_roi_pixmap: QPixmap | None = None
+        #: 「运行日志」面板上一次渲染的内容快照（判重用；比行数可靠）
+        self._log_snapshot: list[str] = []
         #: 最近一次颜色徽章的状态 ``(key, label, muted)``：切主题后要重放
         #: （徽章的浅底胶囊用 rgba 半透明，底色深浅必须跟着主题走）
         self._badge_state: tuple[str, str | None, bool] | None = None
@@ -695,7 +725,22 @@ class MainWindow(QMainWindow):
         self.log_view.setFont(log_font)
         self.log_view.setMaximumHeight(160)
         log_layout.addWidget(self.log_view)
+
+        # 日志文件的去处：同一天多次启动写同一个文件，用户报障时这是唯一的证据。
+        # 路径可选中复制（有些机器上文件管理器打不开，那时只能靠手动去找）。
+        log_row = QHBoxLayout()
+        self.log_path_label = QLabel()
+        self.log_path_label.setObjectName("hintLabel")
+        self.log_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.log_path_label.setToolTip("本次运行的日志文件；同一天多次启动会追加到同一个文件")
+        self.btn_log_dir = QPushButton("打开日志目录")
+        self.btn_log_dir.setObjectName("secondary")
+        self.btn_log_dir.clicked.connect(self.on_open_log_dir)
+        log_row.addWidget(self.log_path_label, 1)
+        log_row.addWidget(self.btn_log_dir)
+        log_layout.addLayout(log_row)
         right_layout.addWidget(log_box)
+        self._refresh_log_path()
 
         splitter.addWidget(right)
         splitter.setSizes([720, 480])
@@ -1276,23 +1321,67 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- 日志
 
-    def _refresh_log_view(self) -> None:
-        records = memory_handler.dump()[-20:]
-        if self.log_view.rowCount() == len(records):
+    #: 「运行日志」面板最多显示多少行（环形缓冲容量是 500，这里只截最近的）
+    _LOG_VIEW_LINES = 200
+
+    def _refresh_log_path(self) -> None:
+        """把日志文件路径显示在面板下方（未开启文件日志时如实说明）。"""
+        path = current_log_file()
+        if path is None:
+            self.log_path_label.setText("日志文件：未开启（config.json 的 log_to_file）")
+            self.btn_log_dir.setEnabled(False)
             return
+        self.btn_log_dir.setEnabled(True)
+        self.log_path_label.setText(f"日志文件：{path.absolute()}")
+
+    def _refresh_log_view(self) -> None:
+        """把内存缓冲里最近的日志刷到面板。
+
+        刷新判据用**内容快照**而不是行数：缓冲满了（500 条）之后行数恒定，
+        早期的"行数相同就返回"会让面板在跑起来之后彻底冻住 —— 这正是
+        v2.7.2 之前界面显示不出日志的第二个原因。
+        """
+        records = memory_handler.dump()[-self._LOG_VIEW_LINES :]
+        if records == self._log_snapshot:
+            return
+        self._log_snapshot = records
         self.log_view.setRowCount(0)
         for line in records:
             row = self.log_view.rowCount()
             self.log_view.insertRow(row)
             self.log_view.setItem(row, 0, QTableWidgetItem(line))
         self.log_view.scrollToBottom()
+        self._refresh_log_path()
+
+    def on_open_log_dir(self) -> None:
+        """在系统文件管理器里打开日志所在目录。"""
+        path = current_log_file()
+        if path is None:
+            QMessageBox.information(
+                self,
+                "运行日志",
+                "本次运行没有写日志文件。\n\n"
+                '把 config.json 里的 "log_to_file" 设为 true 后重启即可开启；\n'
+                '日志会写到 "log_dir"（默认 logs/）目录下。',
+            )
+            return
+        error = _open_directory(path.parent)
+        if error:
+            QMessageBox.information(
+                self,
+                "运行日志",
+                f"打不开文件管理器（{error}）。\n\n日志文件在这里：\n{path.absolute()}",
+            )
 
 
 def run_ui(config: Config | None = None) -> None:
     """启动界面（独立入口）。"""
-    import sys
-
     config = config or Config.load()
+    # 界面此前**从未**初始化过日志：``setup_logging`` 只在 CLI 里调过，
+    # 于是「运行日志」面板永远空白，而且 ``logger.propagate`` 一直是 True
+    # （日志顺着根 logger 走，INFO 级被直接丢掉）。这里补上，幂等。
+    setup_logging(**config.logging_kwargs())
+
     app = QApplication(sys.argv)
     app.setApplicationName("车牌识别系统 v2")
 
