@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.7.1（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.7.2（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌。
 
@@ -48,6 +48,14 @@
 > 「均已就绪」——用户看到的是界面里那行「（不可用）」。现在每次启动都会报
 > 模型权重与四个引擎的可用性，并新增只读体检入口 `start.bat doctor`，
 > 每条不可用都附确切的修复命令（见下方「四种启动方式」）。
+> **v2.7.2 提准确率、补界面**：识别侧新增「补救预处理」—— 主识别计划的
+> 6 轮只换放大/锐化的尺度、从不换增强方式，对"噪点把字形咬坏"无能为力；
+> 现在主计划落空时自动换去噪 / 对比度均衡 / 二值化重试，实测 yolo
+> 84%→85%、字符级 90.7%→93.6%、「有框无字」8→4 张（依据与代价见
+> [docs/ACCURACY.md §5.3](docs/ACCURACY.md)）。界面侧把配置里躺了很久的
+> `ui.theme` 真正落地（浅色/深色，Ctrl+1/2 切换），并补上候选列表、
+> 拖拽打开、一键复制号码；待办清单位移交
+> [docs/ROADMAP.md](docs/ROADMAP.md)。
 > 逐版本记录见 [docs/UPGRADE.md](docs/UPGRADE.md)。
 
 ## 核心特性
@@ -70,7 +78,9 @@
     默认还带一条**准入规则**：孤立候选要凑到第二个成员的票才留，或票权达到 1.0
     才能独存 —— 因为实测 `cv` 在 4096×2304 的真实样张上会给 9 条候选（7 条误检），
     而 `yolo` 给 2 条全中；只做并集会让最弱成员污染输出
-- **现代化 GUI**（PySide6）：单图 / 批量 / 摄像头实时识别，识别不再冻结画面，历史记录可导出 CSV
+- **现代化 GUI**（PySide6）：单图 / 批量 / 摄像头实时识别，识别不再冻结画面，
+  历史记录可导出 CSV；浅色/深色双主题（Ctrl+1/2 切换）、图片/文件夹拖进窗口
+  即识别、结果区候选列表与一键复制号码
 - **命令行工具**：`lpr predict`、`lpr video`、`lpr gui`、`lpr engines`、`lpr check`、`lpr models`、`lpr config`
 - **参数自适应**：定位参数以比例表达，同一套配置适配 640px～4000px 输入（原版换分辨率就失效）
 - **多车牌**：一张图里的多个车牌全部识别（原版只返回第一个）
@@ -475,11 +485,20 @@ for r in engine.predict("car.jpg"):
 ### 界面
 
 运行 `lpr gui`：
-- **打开图片**（Ctrl+O）/ **批量识别文件夹**：结果表格展示，可导出 CSV
+- **打开图片**（Ctrl+O）/ **批量识别文件夹** / **拖拽导入**（图片或文件夹直接
+  拖进窗口）：结果表格展示，可导出 CSV
 - **摄像头实时识别**：采集与识别在**两个独立线程**里跑 —— 采集线程只管 `cap.read()`
   和刷画面，识别线程始终取"最新一帧"推理。识别慢于采集时不会积压帧，
   画面按摄像头原生帧率刷新
 - 引擎下拉框热切换，不可用的引擎自动置灰并给出安装提示
+- **结果区**：号码按国标配色渲染成车牌的样子（蓝/黄/绿/白/黑）、
+  车牌缩略图、颜色徽章、一键复制号码（Ctrl+Shift+C）；一张图检出多块车牌时
+  候选表列出全部（点行回显），不再只显示最高分的一条
+- **历史行点击回显**，识别历史可导出 CSV
+- **浅色/深色主题**：视图菜单或 Ctrl+1 / Ctrl+2 切换，选择写回 `config.json`
+  （`ui.theme`）下次启动沿用；车牌展示卡刻意不跟主题走 —— 国标配色是
+  物理属性，蓝牌在深色模式下也得是蓝的
+- 窗口缩放后图片自动按新尺寸重绘（去抖 200ms，不做实时重采样）
 
 > v2.3.1 修复：此前 `CameraWorker` 号称"采集与识别解耦"，实际是把
 > `engine.predict(frame)` 写在采集循环里**同步执行**（deep 引擎约 200ms/张，
@@ -541,10 +560,11 @@ models/yolo/            # 检测识别引擎权重放置目录（自带说明，
 samples/  img/          # 真实测试样张（回归基线的数据来源）
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
                         #   加 doctor 参数为只读环境体检
-tests/                  # 1110 项 pytest 测试（含 tests/baselines/ 行为基线）
+tests/                  # 1126 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比
-docs/ACCURACY.md        # 准确率实测与提升路线（v2.7.0）
+docs/ACCURACY.md        # 准确率实测与提升路线（v2.7.0，v2.7.2 增补）
+docs/ROADMAP.md         # 待完善清单（收益/风险排序 + 归档）
 docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 ```
 
@@ -552,7 +572,7 @@ docs/THIRD_PARTY.md     # 第三方依赖许可证清单
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 1110 项单元/集成测试
+pytest tests/ -q                                    # 1126 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 python tools/benchmark.py --images samples --repeat 3 --json out/bench.json
 ruff check src tools tests && mypy                  # 静态检查（CI 会跑）
@@ -612,6 +632,12 @@ python tools/eval_locate.py datasets/hg/test --baseline reports/base.json   # �
 - **第二识别模型（低置信交叉验证）默认关闭，实测也应保持关闭**：100 张 CCPD 上
   开启后严格命中一張未变（失败集合逐张相同），`deep` 耗时却 ×2.9
   （716→2042 ms）。详见 [docs/ACCURACY.md §5.1](docs/ACCURACY.md)
+- **补救预处理会让 `deep` 慢约三成（v2.7.2 实测 716→946 ms）**：它只在候选
+  完全读不出字时触发，`deep` 的失败是"没框"或"读错了"都不触发，但候选池里
+  的垃圾候选会消耗预算空跑（每图最多补 2 个候选）。`yolo` 每图只有 1~2 个
+  候选，实测中位耗时基本不变（125→109 ms，还略快了 —— 波动范围内）。
+  收益端：yolo 84%→85%、字符级 +2.9pp。若你的场景识别瓶颈在吞吐而非精度，
+  可关注 [docs/ROADMAP.md](docs/ROADMAP.md) 的开关化提案
 - **Python API 的 `engine` 参数默认是 `"auto"`，不读 `config.engine.default`**：
   想让 API 也用配置里的默认引擎（例如 `fusion`），要显式传
   `Recognizer(engine=config.engine.default)`；CLI 与 GUI 都是显式传的，不受影响

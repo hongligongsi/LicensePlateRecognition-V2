@@ -23,6 +23,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QColor,
     QFont,
     QImage,
@@ -30,6 +31,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QGraphicsDropShadowEffect,
@@ -131,26 +133,105 @@ _BADGE_HEX = {
     PlateColor.UNKNOWN.value: "#8a93a3",
 }
 
-# 设计令牌：整套界面只用这几个颜色/圆角，改主题只动这里
-_T = {
-    "bg": "#eef1f6",  # 窗口底色
-    "surface": "#ffffff",  # 卡片
-    "border": "#e2e7ef",  # 卡片描边
-    "text": "#1f2733",  # 正文
-    "muted": "#7b8499",  # 次要文字
-    "accent": "#2f6bed",  # 主色
-    "accent_hover": "#245fcf",
-    "danger": "#e5484d",
+#: 设计令牌：整套界面只用这几个颜色。两套主题共用同一组键名，
+#: 加一套主题 = 加一个 dict —— 控件代码一行都不用改（见 :func:`build_qss`）。
+#: 车牌自身的国标配色**不在这里**（那是物理属性，与界面明暗无关，见 ``_PLATE_SKIN``）。
+_THEMES: dict[str, dict[str, str]] = {
+    "light": {
+        "bg": "#eef1f6",  # 窗口底色
+        "surface": "#ffffff",  # 卡片
+        "surface2": "#f4f6fa",  # 表头 / 次级面板
+        "border": "#e2e7ef",  # 卡片描边
+        "text": "#1f2733",  # 正文
+        "muted": "#7b8499",  # 次要文字
+        "accent": "#2f6bed",  # 主色
+        "accent_hover": "#245fcf",
+        "accent_pressed": "#1d4fae",
+        "accent_soft": "#e3ecff",  # 选中态浅底
+        "disabled": "#c3ccda",
+        "danger": "#e5484d",
+        "danger_hover": "#c93a3f",
+        "ctrl_border": "#cdd5e1",  # 次级按钮/输入框描边
+        "ctrl_hover": "#f2f5fa",
+        "ctrl_pressed": "#e6ecf5",
+        "grid": "#eef1f6",  # 表格网格线
+        "alt_row": "#f8fafd",  # 斑马纹
+        "image_bg": "#171b22",  # 图像区（两套主题都深色：照片在深底上最清楚）
+        "image_border": "#2a323f",
+        "progress_bg": "#e3e8f0",
+        "scroll": "#c9d1de",
+        "scroll_hover": "#aab5c6",
+        "tooltip_bg": "#2b3342",
+        "shadow": "31, 39, 51, 26",  # 卡片投影 rgba 分量
+    },
+    "dark": {
+        "bg": "#12161d",
+        "surface": "#1a2029",
+        "surface2": "#212936",
+        "border": "#2b3441",
+        "text": "#e6ebf2",
+        "muted": "#8f9aad",
+        "accent": "#4c8dff",
+        "accent_hover": "#5f9bff",
+        "accent_pressed": "#3d7cf0",
+        "accent_soft": "#25354e",
+        "disabled": "#39424f",
+        "danger": "#ef5350",
+        "danger_hover": "#d94448",
+        "ctrl_border": "#3a4553",
+        "ctrl_hover": "#232c39",
+        "ctrl_pressed": "#1e2632",
+        "grid": "#232b38",
+        "alt_row": "#1e2530",
+        "image_bg": "#0c0f14",
+        "image_border": "#242c38",
+        "progress_bg": "#232b38",
+        "scroll": "#39424f",
+        "scroll_hover": "#4a5563",
+        "tooltip_bg": "#0f131a",
+        "shadow": "0, 0, 0, 110",
+    },
 }
 
-_QSS = f"""
+#: 主题名 → 中文显示名（菜单与状态栏用）
+THEME_LABELS = {"light": "浅色", "dark": "深色"}
+
+#: 默认主题（与 ``UIConfig.theme`` 的默认值一致）
+DEFAULT_THEME = "light"
+
+#: 当前主题令牌。进程级可变状态：GUI 只有一扇主窗口，且 ``build_qss``
+#: 在切主题时被重新求值，因此不需要把它挂到实例上（挂上去反而要求
+#: 每个引用 `_T[...]` 的地方都改成 `self._t[...]`，漏一处就是半截主题）。
+_T: dict[str, str] = dict(_THEMES[DEFAULT_THEME])
+
+
+def normalize_theme(name: str | None) -> str:
+    """把任意主题名收敛到受支持的值（未知/空 → 默认主题）。"""
+    return name if name in _THEMES else DEFAULT_THEME
+
+
+def set_theme(name: str | None) -> str:
+    """切换当前主题令牌，返回实际生效的主题名。"""
+    key = normalize_theme(name)
+    _T.clear()
+    _T.update(_THEMES[key])
+    return key
+
+
+def build_qss() -> str:
+    """按**当前**主题令牌生成全局 QSS。"""
+    return f"""
 QMainWindow, QMenuBar {{ background: {_T["bg"]}; }}
 QMenuBar {{ padding: 2px 8px; }}
 QMenuBar::item {{ padding: 4px 10px; border-radius: 5px; color: {_T["text"]}; }}
-QMenuBar::item:selected {{ background: #dfe5ee; }}
-QMenu {{ background: white; border: 1px solid {_T["border"]}; border-radius: 8px; padding: 4px; }}
-QMenu::item {{ padding: 6px 24px; border-radius: 5px; }}
+QMenuBar::item:selected {{ background: {_T["accent_soft"]}; }}
+QMenu {{
+    background: {_T["surface"]}; border: 1px solid {_T["border"]};
+    border-radius: 8px; padding: 4px;
+}}
+QMenu::item {{ padding: 6px 24px; border-radius: 5px; color: {_T["text"]}; }}
 QMenu::item:selected {{ background: {_T["accent"]}; color: white; }}
+QMenu::separator {{ height: 1px; background: {_T["border"]}; margin: 4px 8px; }}
 
 QGroupBox {{
     font-weight: 600; font-size: 13px;
@@ -167,57 +248,72 @@ QPushButton {{
     padding: 0 18px; min-height: 32px; font-size: 13px; font-weight: 500;
 }}
 QPushButton:hover {{ background: {_T["accent_hover"]}; }}
-QPushButton:pressed {{ background: #1d4fae; }}
-QPushButton:disabled {{ background: #c3ccda; }}
+QPushButton:pressed {{ background: {_T["accent_pressed"]}; }}
+QPushButton:disabled {{ background: {_T["disabled"]}; color: {_T["muted"]}; }}
 QPushButton#secondary {{
-    background: white; color: {_T["text"]}; border: 1px solid #cdd5e1;
+    background: {_T["surface"]}; color: {_T["text"]};
+    border: 1px solid {_T["ctrl_border"]};
 }}
-QPushButton#secondary:hover {{ background: #f2f5fa; border-color: {_T["accent"]}; }}
-QPushButton#secondary:pressed {{ background: #e6ecf5; }}
+QPushButton#secondary:hover {{
+    background: {_T["ctrl_hover"]}; border-color: {_T["accent"]};
+}}
+QPushButton#secondary:pressed {{ background: {_T["ctrl_pressed"]}; }}
 QPushButton#danger {{ background: {_T["danger"]}; }}
-QPushButton#danger:hover {{ background: #c93a3f; }}
+QPushButton#danger:hover {{ background: {_T["danger_hover"]}; }}
+/* 小尺寸按钮：复制这类轻量动作不该和主按钮一样抢眼 */
+QPushButton#mini {{
+    background: {_T["surface"]}; color: {_T["muted"]};
+    border: 1px solid {_T["ctrl_border"]}; border-radius: 6px;
+    padding: 0 10px; min-height: 24px; max-height: 24px; font-size: 12px;
+}}
+QPushButton#mini:hover {{ color: {_T["accent"]}; border-color: {_T["accent"]}; }}
 
 QComboBox {{
-    border: 1px solid #cdd5e1; border-radius: 8px; padding: 0 10px;
-    min-height: 32px; background: white; color: {_T["text"]};
+    border: 1px solid {_T["ctrl_border"]}; border-radius: 8px; padding: 0 10px;
+    min-height: 32px; background: {_T["surface"]}; color: {_T["text"]};
 }}
 QComboBox:hover {{ border-color: {_T["accent"]}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
-    background: white; border: 1px solid {_T["border"]}; border-radius: 8px;
-    selection-background-color: #e3ecff; selection-color: {_T["text"]};
+    background: {_T["surface"]}; border: 1px solid {_T["border"]}; border-radius: 8px;
+    selection-background-color: {_T["accent_soft"]}; selection-color: {_T["text"]};
     outline: none; padding: 4px;
 }}
 /* 条目文字必须显式上色：系统深色模式下默认调色板文字是浅色，
-   只给弹层设白底不设字色会变成白底白字，条目全部“隐形” */
+   只给弹层设白底不设字色会变成白底白字，条目全部"隐形" */
 QComboBox QAbstractItemView::item {{
-    background: white; color: {_T["text"]};
+    background: {_T["surface"]}; color: {_T["text"]};
     min-height: 30px; padding: 4px 8px; border-radius: 6px;
 }}
 QComboBox QAbstractItemView::item:selected {{
-    background: #e3ecff; color: {_T["text"]};
+    background: {_T["accent_soft"]}; color: {_T["text"]};
 }}
 QComboBox QAbstractItemView::item:disabled {{
-    background: white; color: {_T["muted"]};
+    background: {_T["surface"]}; color: {_T["muted"]};
 }}
 
 QTableWidget {{
     border: none; background: {_T["surface"]};
-    gridline-color: #eef1f6; selection-background-color: #e3ecff;
-    selection-color: {_T["text"]}; alternate-background-color: #f8fafd;
+    gridline-color: {_T["grid"]}; selection-background-color: {_T["accent_soft"]};
+    selection-color: {_T["text"]}; alternate-background-color: {_T["alt_row"]};
+    color: {_T["text"]};
 }}
 QHeaderView::section {{
-    background: #f4f6fa; color: {_T["muted"]}; border: none;
+    background: {_T["surface2"]}; color: {_T["muted"]}; border: none;
     border-bottom: 1px solid {_T["border"]}; padding: 7px 6px; font-weight: 600;
 }}
-QTableCornerButton::section {{ background: #f4f6fa; border: none; }}
+QTableCornerButton::section {{ background: {_T["surface2"]}; border: none; }}
 
 QLabel#imageArea {{
-    border: 1px solid #2a323f; border-radius: 12px; background: #171b22;
+    border: 1px solid {_T["image_border"]}; border-radius: 12px; background: {_T["image_bg"]};
     color: #6e7a8d; font-size: 14px;
 }}
 QLabel#plateCard {{
     border-radius: 12px; padding: 4px 10px;
+}}
+QLabel#roiArea {{
+    background: {_T["surface2"]}; border: 1px solid {_T["border"]}; border-radius: 8px;
+    color: {_T["muted"]}; font-size: 12px;
 }}
 QLabel#colorBadge {{
     border-radius: 10px; font-weight: 600; font-size: 15px;
@@ -237,23 +333,29 @@ QStatusBar {{
 QStatusBar::item {{ border: none; }}
 
 QProgressBar {{
-    background: #e3e8f0; border: none; border-radius: 7px;
+    background: {_T["progress_bg"]}; border: none; border-radius: 7px;
     min-height: 14px; max-height: 14px; text-align: center;
     color: transparent; font-size: 9px;
 }}
 QProgressBar::chunk {{ background: {_T["accent"]}; border-radius: 7px; }}
 
 QScrollBar:vertical {{ background: transparent; width: 9px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: #c9d1de; border-radius: 4px; min-height: 30px; }}
-QScrollBar::handle:vertical:hover {{ background: #aab5c6; }}
+QScrollBar::handle:vertical {{
+    background: {_T["scroll"]}; border-radius: 4px; min-height: 30px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {_T["scroll_hover"]}; }}
 QScrollBar:horizontal {{ background: transparent; height: 9px; margin: 2px; }}
-QScrollBar::handle:horizontal {{ background: #c9d1de; border-radius: 4px; min-width: 30px; }}
+QScrollBar::handle:horizontal {{
+    background: {_T["scroll"]}; border-radius: 4px; min-width: 30px;
+}}
+QScrollBar::handle:horizontal:hover {{ background: {_T["scroll_hover"]}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
 QSplitter::handle {{ background: {_T["bg"]}; width: 10px; }}
 QToolTip {{
-    background: #2b3342; color: white; border: none; border-radius: 6px; padding: 6px 10px;
+    background: {_T["tooltip_bg"]}; color: white; border: none;
+    border-radius: 6px; padding: 6px 10px;
 }}
 """
 
@@ -290,10 +392,28 @@ class MainWindow(QMainWindow):
         self._batch_done = 0
         self._batch_total = 0
         self._last_roi_pixmap: QPixmap | None = None
+        #: 最近一次颜色徽章的状态 ``(key, label, muted)``：切主题后要重放
+        #: （徽章的浅底胶囊用 rgba 半透明，底色深浅必须跟着主题走）
+        self._badge_state: tuple[str, str | None, bool] | None = None
+        #: 当前展示的号码（供「复制」按钮取用）
+        self._current_text = ""
+        #: 当前静态图片（缩放窗口后按新尺寸重绘）
+        self._current_image: np.ndarray | None = None
+        #: 窗口尺寸变化后的重绘去抖定时器。
+        #: **必须在 `resize()` 之前建好** —— resize 会同步触发 resizeEvent，
+        #: 那时若它还不存在就会直接抛 AttributeError。
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._redraw_current_image)
 
         self.setWindowTitle(config.ui.window_title)
         self.resize(*config.ui.window_size)
-        self.setStyleSheet(_QSS)
+        #: 外观主题。``UIConfig.theme`` 此前只有字段没有实现（界面永远浅色），
+        #: 现在两套令牌共用同一个 `build_qss`，切主题不需要重建任何控件。
+        self._theme = set_theme(config.ui.theme)
+        self.setStyleSheet(build_qss())
+        #: 支持把图片/文件夹直接拖进窗口识别
+        self.setAcceptDrops(True)
 
         self._build_menu()
         self._build_ui()
@@ -324,6 +444,11 @@ class MainWindow(QMainWindow):
         act_open.triggered.connect(self.on_open_images)
         menu.addAction(act_open)
 
+        act_folder = QAction("打开文件夹(&D)...", self)
+        act_folder.setShortcut("Ctrl+Shift+O")
+        act_folder.triggered.connect(self.on_batch_folder)
+        menu.addAction(act_folder)
+
         act_export = QAction("导出历史记录(&E)...", self)
         act_export.setShortcut("Ctrl+E")
         act_export.triggered.connect(self.on_export_history)
@@ -333,6 +458,44 @@ class MainWindow(QMainWindow):
         act_quit = QAction("退出(&Q)", self)
         act_quit.triggered.connect(self.close)
         menu.addAction(act_quit)
+
+        # ---------- 视图：主题切换 ----------
+        view = self.menuBar().addMenu("视图(&V)")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self._theme_actions: dict[str, QAction] = {}
+        for idx, key in enumerate(("light", "dark"), start=1):
+            act = QAction(f"{THEME_LABELS[key]}主题(&{THEME_LABELS[key][0]})", self)
+            act.setCheckable(True)
+            act.setChecked(key == self._theme)
+            act.setShortcut(f"Ctrl+{idx}")
+            act.triggered.connect(lambda _checked=False, k=key: self.on_theme_changed(k))
+            group.addAction(act)
+            view.addAction(act)
+            self._theme_actions[key] = act
+
+        view.addSeparator()
+        act_fit = QAction("适应窗口显示图片(&F)", self)
+        act_fit.setShortcut("Ctrl+0")
+        act_fit.triggered.connect(self._redraw_current_image)
+        view.addAction(act_fit)
+
+    def on_theme_changed(self, name: str) -> None:
+        """切换外观主题，并写回配置（下次启动沿用）。"""
+        self._theme = set_theme(name)
+        self.setStyleSheet(build_qss())
+        self._apply_card_shadows()
+        # 徽章的半透明胶囊底色取自主题令牌、车牌展示卡则是内联样式，
+        # 切主题后重放一次，避免留下上一个主题的残色
+        if self._badge_state is not None:
+            self._apply_badge(*self._badge_state)
+        if self._history_placeholder:
+            self._show_history_placeholder()
+        self.config.ui.theme = self._theme
+        for key, act in self._theme_actions.items():
+            act.setChecked(key == self._theme)
+        self._refresh_statusbar()
+        logger.info("切换外观主题 → %s", THEME_LABELS.get(self._theme, self._theme))
 
     # ---------------------------------------------------------------- 界面
 
@@ -370,7 +533,8 @@ class MainWindow(QMainWindow):
         self.camera_combo = QComboBox()
         self.camera_combo.setToolTip("要使用的摄像头索引（启动前自动探测）")
         camera_caption = QLabel("摄像头")
-        camera_caption.setStyleSheet(f"color:{_T['muted']};")
+        # 用 objectName 而不是内联色：切主题时内联样式不会跟着变
+        camera_caption.setObjectName("hintLabel")
         toolbar.addWidget(self.btn_open)
         toolbar.addWidget(self.btn_batch)
         toolbar.addWidget(self.btn_camera)
@@ -434,16 +598,47 @@ class MainWindow(QMainWindow):
         self.plate_label.setMinimumHeight(64)
         self.plate_label.setStyleSheet(f"color:{_LABEL_HEX[PlateColor.BLUE.value]};")
 
+        # 号码 + 一键复制：识别之后最常见的下一步就是"把号码粘到别处去"
+        plate_row = QWidget()
+        plate_row_layout = QHBoxLayout(plate_row)
+        plate_row_layout.setContentsMargins(0, 0, 0, 0)
+        plate_row_layout.setSpacing(6)
+        plate_row_layout.addWidget(self.plate_label, 1)
+        self.btn_copy = QPushButton("复制")
+        self.btn_copy.setObjectName("mini")
+        self.btn_copy.setFixedWidth(54)
+        self.btn_copy.setToolTip("复制当前号码到剪贴板（Ctrl+Shift+C）")
+        self.btn_copy.setShortcut("Ctrl+Shift+C")
+        self.btn_copy.clicked.connect(self.on_copy_text)
+        self.btn_copy.setEnabled(False)
+        plate_row_layout.addWidget(self.btn_copy, 0, Qt.AlignBottom)
+
         self.roi_label = QLabel()
+        self.roi_label.setObjectName("roiArea")
         self.roi_label.setAlignment(Qt.AlignCenter)
         self.roi_label.setMinimumSize(240, 88)
-        self.roi_label.setStyleSheet("background:#f4f6fa; border-radius:8px;")
 
         self.meta_label = QLabel("等待识别…")
         self.meta_label.setWordWrap(True)
         self.meta_label.setObjectName("metaLabel")
 
-        result_layout.addWidget(self.plate_label, 0, 0, 1, 2)
+        # 多车牌场景下这里列出全部候选（结果卡位只放最高分的那个，
+        # 此前其余的只写进日志，界面上看不见）
+        self.candidates_table = QTableWidget(0, 3)
+        self.candidates_table.setHorizontalHeaderLabels(["号码", "颜色", "置信度"])
+        self.candidates_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.candidates_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.candidates_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.candidates_table.setAlternatingRowColors(True)
+        self.candidates_table.setShowGrid(False)
+        self.candidates_table.verticalHeader().setVisible(False)
+        self.candidates_table.verticalHeader().setDefaultSectionSize(26)
+        self.candidates_table.setMaximumHeight(104)
+        self.candidates_table.setVisible(False)
+        self.candidates_table.setToolTip("同一张图检出的全部号码，按置信度排序；点行可回显")
+        self.candidates_table.cellClicked.connect(self._on_candidate_clicked)
+
+        result_layout.addWidget(plate_row, 0, 0, 1, 2)
         result_layout.addWidget(self.roi_label, 1, 0)
         color_card = QLabel("—")
         color_card.setObjectName("colorBadge")
@@ -451,6 +646,7 @@ class MainWindow(QMainWindow):
         self.color_card = color_card
         result_layout.addWidget(color_card, 1, 1)
         result_layout.addWidget(self.meta_label, 2, 0, 1, 2)
+        result_layout.addWidget(self.candidates_table, 3, 0, 1, 2)
         right_layout.addWidget(result_box)
 
         # 历史记录
@@ -533,13 +729,20 @@ class MainWindow(QMainWindow):
         self._status_camera.setText("")
 
     def _apply_card_shadows(self) -> None:
-        """给卡片加一点柔和投影（Qt 无 CSS box-shadow，用图形效果实现）。"""
+        """给卡片加一点柔和投影（Qt 无 CSS box-shadow，用图形效果实现）。
+
+        幂等：切主题时复用已有 effect 只改颜色，否则每切一次都会叠一层新
+        效果对象（旧的不回收，而且叠加后投影会越来越黑）。
+        """
+        r, g, b, a = (int(part) for part in _T["shadow"].split(","))
         for widget in self._cards:
-            effect = QGraphicsDropShadowEffect(widget)
+            effect = widget.graphicsEffect()
+            if not isinstance(effect, QGraphicsDropShadowEffect):
+                effect = QGraphicsDropShadowEffect(widget)
+                widget.setGraphicsEffect(effect)
             effect.setBlurRadius(18)
             effect.setOffset(0, 2)
-            effect.setColor(QColor(31, 39, 51, 26))
-            widget.setGraphicsEffect(effect)
+            effect.setColor(QColor(r, g, b, a))
 
     # ---------------------------------------------------------------- 引擎
 
@@ -700,6 +903,8 @@ class MainWindow(QMainWindow):
 
     def _apply_badge(self, key: str, label: str | None = None, muted: bool = False) -> None:
         """颜色徽章：浅底胶囊。Qt QSS 不支持 #RRGGBBAA，半透明只能用 rgba()。"""
+        # 记下状态：切主题时要按新令牌重放一次胶囊底色
+        self._badge_state = (key, label, muted)
         if muted or label is None:
             self.color_card.setText("—" if muted else (label or ""))
             self.color_card.setStyleSheet(
@@ -722,6 +927,115 @@ class MainWindow(QMainWindow):
         self.image_label.setPixmap(_array_to_pixmap(img, w, h))
         self._current_image = img
 
+    def _redraw_current_image(self) -> None:
+        """按当前容器尺寸重绘静态图片。
+
+        ``QLabel#imageArea`` 刻意没有开 ``scaledContents``：让它自己拉伸会把
+        位图放大到模糊（`_array_to_pixmap` 的平滑缩放才有正确的质量）。代价是
+        缩放窗口后 pixmap 不会自己跟着变，所以这里补一次重绘。
+        """
+        img = self._current_image
+        if img is not None:
+            self._show_image(img)
+
+    def resizeEvent(self, event) -> None:
+        """窗口尺寸变化 → 去抖后重绘图片。
+
+        去抖 200ms：拖动边框时每个像素变化都重采样一遍会明显卡顿。
+        """
+        super().resizeEvent(event)
+        self._fit_timer.start(200)
+
+    # ---------------------------------------------------------------- 复制
+
+    def _set_current_text(self, text: str) -> None:
+        """记录当前号码，并同步「复制」按钮的可用性。"""
+        self._current_text = text
+        self.btn_copy.setEnabled(bool(text))
+
+    def on_copy_text(self) -> None:
+        """把当前展示的号码复制到剪贴板。"""
+        text = self._current_text
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage(f"已复制：{text}", 2000)
+
+    def _fill_candidates(self, results: list[PlateResult]) -> None:
+        """把全部候选填进候选表；只有一个候选时整张表隐藏（不占地方）。"""
+        self.candidates_table.setRowCount(0)
+        if len(results) <= 1:
+            self.candidates_table.setVisible(False)
+            return
+
+        self.candidates_table.setVisible(True)
+        for res in results:
+            row = self.candidates_table.rowCount()
+            self.candidates_table.insertRow(row)
+            values = [res.text or "（未读出）", res.color.label, f"{res.confidence:.2f}"]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                # 与历史表同口径：结果对象绑在单元格上，点行即可回显
+                item.setData(Qt.UserRole, res)
+                if col == 0:
+                    item.setForeground(QColor(_BADGE_HEX.get(res.color.value, _T["text"])))
+                else:
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.candidates_table.setItem(row, col, item)
+
+    def _on_candidate_clicked(self, row: int, _col: int) -> None:
+        """点击候选行 → 把该候选回显到结果卡位（不改写历史）。"""
+        item = self.candidates_table.item(row, 0)
+        if item is None:
+            return
+        res = item.data(Qt.UserRole)
+        if isinstance(res, PlateResult):
+            self._render_result(res, prefix="候选")
+
+    def _show_results(self, results: list[PlateResult], elapsed: float, source: str) -> None:
+        if not results:
+            self._apply_plate_skin(PlateColor.UNKNOWN.value, "未识别到车牌")
+            self._apply_badge(PlateColor.UNKNOWN.value, muted=True)
+            self.meta_label.setText(f"耗时 {elapsed:.0f} ms\n{source}")
+            self._set_current_text("")
+            self._fill_candidates([])
+            return
+
+        best = results[0]
+        self._render_result(best, prefix=f"耗时 {elapsed:.0f} ms")
+        self._fill_candidates(results)
+
+        if len(results) > 1:
+            logger.info("共 %d 个车牌: %s", len(results), " / ".join(r.text for r in results))
+
+        self._append_history(best)
+
+    def _render_result(self, res: PlateResult, prefix: str = "") -> None:
+        """把一条结果渲染到结果卡位（号码皮肤 / 颜色徽章 / ROI / 元信息）。
+
+        结果区、历史行点击、候选行点击三处共用这一段 —— 此前历史行点击
+        与实时结果各写了一份几乎相同的渲染代码，改一处漏一处。
+        """
+        self._apply_plate_skin(res.color.value, res.text)
+        self._apply_badge(res.color.value, label=res.color.label)
+        self._set_current_text(res.text)
+
+        if res.roi is not None and res.roi.size:
+            self._last_roi_pixmap = _array_to_pixmap(
+                res.roi, self.roi_label.width(), self.roi_label.height()
+            )
+            self.roi_label.setPixmap(self._last_roi_pixmap)
+
+        chars_info = (
+            " ".join(f"{t}:{c:.2f}" for t, c in zip(res.text, res.char_confidences, strict=False))
+            if res.char_confidences
+            else ""
+        )
+        head = f"{prefix}｜" if prefix else ""
+        self.meta_label.setText(
+            f"{head}引擎 {res.engine}｜置信度 {res.confidence:.2f}\nbbox={res.bbox}  {chars_info}"
+        )
+
     def _apply_plate_skin(self, key: str, text: str) -> None:
         """把号码渲染成「车牌的样子」：按国标配色铺底、对比色写字。
 
@@ -733,39 +1047,6 @@ class MainWindow(QMainWindow):
             f"background:{skin['bg']}; color:{skin['fg']};"
             f"border:2px solid {skin['border']}; border-radius:12px;"
         )
-
-    def _show_results(self, results: list[PlateResult], elapsed: float, source: str) -> None:
-        if not results:
-            self._apply_plate_skin(PlateColor.UNKNOWN.value, "未识别到车牌")
-            self.color_card.setText("—")
-            self._apply_badge(PlateColor.UNKNOWN.value, muted=True)
-            self.meta_label.setText(f"耗时 {elapsed:.0f} ms\n{source}")
-            return
-
-        best = results[0]
-        self._apply_plate_skin(best.color.value, best.text)
-        self._apply_badge(best.color.value, label=best.color.label)
-
-        if best.roi is not None and best.roi.size:
-            self._last_roi_pixmap = _array_to_pixmap(
-                best.roi, self.roi_label.width(), self.roi_label.height()
-            )
-            self.roi_label.setPixmap(self._last_roi_pixmap)
-
-        chars_info = (
-            " ".join(f"{t}:{c:.2f}" for t, c in zip(best.text, best.char_confidences, strict=False))
-            if best.char_confidences
-            else ""
-        )
-        self.meta_label.setText(
-            f"耗时 {elapsed:.0f} ms｜引擎 {best.engine}｜候选 {len(results)} 个\n"
-            f"bbox={best.bbox}  {chars_info}"
-        )
-
-        if len(results) > 1:
-            logger.info("共 %d 个车牌: %s", len(results), " / ".join(r.text for r in results))
-
-        self._append_history(best)
 
     # ---------------------------------------------------------------- 摄像头
 
@@ -823,6 +1104,8 @@ class MainWindow(QMainWindow):
             self._camera.terminate()
         self._camera = None
         self.btn_camera.setText("启动摄像头")
+        # 同时清掉缓存的图，否则窗口一缩放它又会被重绘回来
+        self._current_image = None
         self.image_label.clear()
         self.image_label.setText("打开图片或启动摄像头\n（Ctrl+O）")
 
@@ -846,12 +1129,55 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """关窗时优雅停掉所有线程（原版这里会超时强杀）。"""
         self._log_timer.stop()
+        self._fit_timer.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.wait(3000)
         if self._camera is not None:
             self._camera.stop()
             self._camera.wait(2000)
         super().closeEvent(event)
+
+    # ---------------------------------------------------------------- 拖放
+
+    def _dropped_images(self, urls) -> list[Path]:
+        """把拖进来的 URL 展开成待识别图片列表（文件夹按扩展名白名单展开）。"""
+        files: list[Path] = []
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.is_dir():
+                files.extend(
+                    sorted(
+                        p
+                        for p in path.iterdir()
+                        if p.is_file() and p.suffix.lower() in self.limits.allowed_extensions
+                    )
+                )
+            elif path.is_file() and path.suffix.lower() in self.limits.allowed_extensions:
+                files.append(path)
+        return files
+
+    def dragEnterEvent(self, event) -> None:
+        """接受拖入（含文件夹）。判据是"有本地路径"，不预先遍历目录 ——
+        dragEnter 在鼠标移动过程中会被高频调用，这里做 I/O 会卡住 UI。"""
+        if event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        files = self._dropped_images(event.mimeData().urls())
+        if not files:
+            QMessageBox.information(
+                self, "提示", "拖入的内容里没有可识别的图片文件（支持常见图片扩展名）。"
+            )
+            return
+        event.acceptProposedAction()
+        logger.info("拖放导入 %d 张图片", len(files))
+        self._start_batch(files)
 
     # ---------------------------------------------------------------- 历史
 
@@ -913,26 +1239,8 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         res = item.data(Qt.UserRole)
-        if not isinstance(res, PlateResult):
-            return  # 占位行没有数据
-
-        self._apply_plate_skin(res.color.value, res.text)
-        self._apply_badge(res.color.value, label=res.color.label)
-        if res.roi is not None and res.roi.size:
-            self._last_roi_pixmap = _array_to_pixmap(
-                res.roi, self.roi_label.width(), self.roi_label.height()
-            )
-            self.roi_label.setPixmap(self._last_roi_pixmap)
-
-        chars_info = (
-            " ".join(f"{t}:{c:.2f}" for t, c in zip(res.text, res.char_confidences, strict=False))
-            if res.char_confidences
-            else ""
-        )
-        self.meta_label.setText(
-            f"历史记录｜引擎 {res.engine}｜置信度 {res.confidence:.2f}\n"
-            f"bbox={res.bbox}  {chars_info}"
-        )
+        if isinstance(res, PlateResult):
+            self._render_result(res, prefix="历史记录")
 
     def on_export_history(self) -> None:
         if not self._history:
@@ -983,8 +1291,6 @@ class MainWindow(QMainWindow):
 def run_ui(config: Config | None = None) -> None:
     """启动界面（独立入口）。"""
     import sys
-
-    from PySide6.QtWidgets import QApplication
 
     config = config or Config.load()
     app = QApplication(sys.argv)

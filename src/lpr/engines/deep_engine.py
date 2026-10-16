@@ -97,6 +97,30 @@ _UPSCALE_STEPS = (3.0, 2.0, 4.0)
 #: 锐化强度
 _SHARPEN_LEVELS = (0.0, 0.8)
 
+#: 主识别计划全部落空时的**补救预处理**（按顺序尝试，拿到合法读数即停）。
+#:
+#: 主计划的 6 轮只做「放大 + 锐化」—— 换的是**尺度**。它对噪声、低对比、
+#: 强光溢出的图无能为力：实测 CCPD 的 blur/fn 子集上模型给出的是"高置信度
+#: 地读错"（皖AUF027 → 皖ANF027，噪点把 U 咬成 N）或干脆空串，把同一张图
+#: 放大 2/3/4 倍再锐化一遍并不改变这件事。
+#: 补救计划换的是**预处理本身**：去噪、局部对比度均衡、二值化。
+#: 触发条件是「该候选一个合法读数都没抽出来」，因此对已命中的样本零影响。
+_RESCUE_VARIANTS: tuple[str, ...] = ("denoise", "clahe", "otsu")
+
+#: 补救变体统一使用的放大倍数。
+#: 刻意**不用** :func:`_upscale` 的自适应倍数：那条路假定"字符高要凑到 48px"，
+#: 对高分辨率 ROI 会算出接近 1 的倍数；而去噪/二值化之后需要的是**绝对够大**
+#: 的字面尺寸。实测 3 倍是这批困难图的甜点（更小则笔画仍糊，更大则重采样损失）。
+_RESCUE_SCALE = 3.0
+
+#: 补救预处理的**每图预算**（最多补救几个候选）。
+#:
+#: 识别是逐候选处理的，而候选池里常混着车身纹理之类的垃圾候选 —— 它们本来
+#: 就该读不出字，却会让补救路径一次次空跑。实测 `deep` 的候选池（上限 5 个）
+#: 使单图耗时从 716ms 涨到 1344ms，而**识别命中一张都没多**；收益其实全在
+#: "主候选差一点就读出来"的图上。取 2 次预算：拿到同样的识别收益，耗时只涨三成。
+_RESCUE_BUDGET = 2
+
 #: 早停前必须跑满的最少轮数。
 #: 单轮读数缺乏"跨变体一致性"证据——远距离黄牌实测第 1 轮读错、
 #: 第 3 轮（2.0x）才读对，第 1 轮就停等于放弃纠错机会。
@@ -632,6 +656,59 @@ def _sharpen(img: np.ndarray, amount: float) -> np.ndarray:
     return cv2.addWeighted(img, 1 + amount, blurred, -amount, 0)
 
 
+def _rescue_preprocess(roi: np.ndarray, variant: str) -> np.ndarray | None:
+    """补救预处理：换的是"怎么增强"，而不是"放大多少"。
+
+    只在主计划的 6 轮一个合法读数都没抽出来时才会被调用，见
+    :data:`_RESCUE_VARIANTS` 里对动机的说明。
+
+    Args:
+        roi: 候选车牌区域（BGR）。
+        variant: ``denoise`` / ``clahe`` / ``otsu``。
+
+    Returns:
+        增强并放大后的图；``variant`` 未知、入参为空或结果过大时返回 ``None``
+        （由调用方跳过该变体）。
+    """
+    if roi is None or roi.size == 0 or min(roi.shape[:2]) < 2:
+        return None
+
+    # 内存闸门**前置**：非局部均值去噪是 O(像素数) 的重活，对一张注定会被
+    # 拒绝的巨大 ROI 先跑一遍去噪再拒绝，等于白等几十秒。
+    h, w = roi.shape[:2]
+    new_w, new_h = max(1, int(w * _RESCUE_SCALE)), max(1, int(h * _RESCUE_SCALE))
+    if new_w * new_h > 2_000_000:
+        return None
+
+    if variant == "denoise":
+        # 彩色非局部均值去噪。CCPD 的 fn/blur 子集里噪点会直接改变字形：
+        # 实测 皖AUF027 被稳定读成 皖ANF027（U 的底部被噪点糊住）。
+        work = cv2.fastNlMeansDenoisingColored(roi, None, 7, 7, 7, 21)
+        interpolation = cv2.INTER_CUBIC
+    elif variant == "clahe":
+        # LAB 亮度通道的局部对比度均衡：逆光/反光下笔画与底色分离度不足时，
+        # 全局直方图均衡会把过曝区一起抬起来，限制对比度的 CLAHE 更稳。
+        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+        light, a, b = cv2.split(lab)
+        light = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(light)
+        work = cv2.cvtColor(cv2.merge([light, a, b]), cv2.COLOR_LAB2BGR)
+        interpolation = cv2.INTER_CUBIC
+    elif variant == "otsu":
+        # 灰度 OTSU 全局阈值：底色被强光冲淡时，先压掉底色再认字
+        # （实测 皖AAF725 在二值化后能读出 皖AF725，虽仍丢字但方向是对的）。
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        work = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+        # 二值图必须用最近邻放大：三次插值会在笔画边缘拉出一圈灰过渡，
+        # 把"只有黑白"这件事破坏掉（识别网络看到的就不是干净的二值图了）。
+        interpolation = cv2.INTER_NEAREST
+    else:
+        return None
+
+    return cv2.resize(work, (new_w, new_h), interpolation=interpolation)
+
+
 class DeepEngine(BaseEngine):
     """定位引导 + 纯识别的深度学习引擎。"""
 
@@ -1046,6 +1123,8 @@ class DeepEngine(BaseEngine):
         ``UNKNOWN`` 时回落到 :func:`measure_layout` 的行投影判定。
         """
         results: list[PlateResult] = []
+        #: 本张图剩余的补救次数，见 :data:`_RESCUE_BUDGET`
+        rescue_budget = _RESCUE_BUDGET
 
         for cand_idx, (roi, color, bbox) in enumerate(candidates):
             votes: dict[str, float] = {}
@@ -1112,6 +1191,40 @@ class DeepEngine(BaseEngine):
                         if not _weak_positions(probs) or rounds >= _MAX_WEAK_ROUNDS:
                             logger.debug("候选收敛于 %s（%d/%d 轮）", leader, rounds, len(plan))
                             break
+
+            # ---- 补救预处理：主计划 6 轮全落空时，换一组"增强"重试。
+            # 与下面的第二模型交叉验证是两条**独立**的补救路径 ——
+            # 这里换图像，那里换模型；两者可叠加（先换图像，仍无产出再换模型）。
+            rescue_used = False
+            if not votes and rescue_budget > 0:
+                rescue_budget -= 1
+                # 注意变量名：外层主计划的 `variant` 是**车牌图像变体**（单层图或
+                # 双层拆分后的行），这里不能复用，否则 mypy 会看到同一名字先后
+                # 绑定 ndarray 与 str（mypy 真的拦过一次）。
+                for rescue_name in _RESCUE_VARIANTS:
+                    for plate_view in variants:
+                        # 另起名（不叫 `prepared`）：主计划已在同一作用域把它绑成
+                        # 非 Optional 的 ndarray，重绑会让 mypy 报 assignment 冲突
+                        rescue_img = _rescue_preprocess(plate_view, rescue_name)
+                        if rescue_img is None:
+                            continue
+                        for text, score, char_probs in self._recognize_only_detailed(rescue_img):
+                            cleaned = _clean_text(text)
+                            if not cleaned:
+                                continue
+                            raw_reads.append((cleaned, score))
+                            candidate = _extract_plate(cleaned)
+                            if not candidate:
+                                continue
+                            rescue_used = True
+                            votes[candidate] = votes.get(candidate, 0.0) + score * (
+                                0.5 + plate_score(candidate)
+                            )
+                            _accumulate_char_probs(char_probs_by_text, candidate, char_probs)
+                    # 已有合法读数即停：补救路径只求"有"，不求穷尽所有变体
+                    if votes:
+                        logger.debug("候选经「%s」补救预处理读出结果", variant)
+                        break
 
             # ---- 低置信交叉验证：主模型对该候选完全无产出时，
             # 用第二识别模型补读。只会在"本来就要丢弃"的候选上触发，
@@ -1221,6 +1334,8 @@ class DeepEngine(BaseEngine):
                         "corrections": changes,
                         "aspect": round(roi.shape[1] / max(1, roi.shape[0]), 2),
                         "split_double": layout is PlateLayout.DOUBLE,
+                        # 该结果是否由**换预处理**（去噪/均衡/二值化）救回
+                        "rescue_preprocess": rescue_used,
                         # 该结果是否由第二模型交叉验证救回
                         "secondary_rescue": secondary_used,
                         # 最不可信的字符位置（0-based），便于人工复核与调参

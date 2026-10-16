@@ -316,7 +316,9 @@ class EngineConfig:
 class UIConfig:
     """界面相关。"""
 
-    window_title: str = "车牌识别系统 v2.3.9"
+    #: 窗口标题。**不带版本号** —— 版本号在状态栏显示（``MainWindow`` 会拼
+    #: ``__version__``），写进标题的版本号必然随版本演进漂移（此处曾停在 v2.3.9）。
+    window_title: str = "车牌识别系统"
     window_size: tuple[int, int] = (1280, 800)
     #: 摄像头识别间隔（秒），原版固定 2 秒，这里可调
     camera_interval: float = 0.35
