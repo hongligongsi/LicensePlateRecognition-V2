@@ -41,6 +41,14 @@ from ..utils.security import Limits, check_file, check_image
 
 logger = get_logger("ui.worker")
 
+#: 摄像头探测串行锁。
+#:
+#: Windows 的 DirectShow / MSMF 后端不是并发安全的：两个线程同时
+#: ``cv2.VideoCapture(i)`` + ``release()`` 会触发 ``0xc0000374``（堆损坏，
+#: 进程级崩溃，Python 抓不住）。界面对每个 ``MainWindow`` 起一个探测线程，
+#: 测试里一个进程会连建十几个窗口 —— 不加锁必炸。见 :func:`list_cameras`。
+_CAMERA_PROBE_LOCK = threading.Lock()
+
 
 class ImageWorker(QThread):
     """对单张图片执行识别。"""
@@ -201,6 +209,15 @@ def list_cameras(
     释放继续下一个：Windows 的 DirectShow 对不存在索引失败很快（实测全
     扫 0~7 不足 1 秒），但 MSMF 可能各阻塞数秒，所以上限别开太大。
 
+    .. important::
+       **探测必须串行**。整个循环被 :data:`_CAMERA_PROBE_LOCK` 保护 ——
+       界面对每个 ``MainWindow`` 都会起一个探测线程，而 Windows 的
+       DirectShow/MSMF 后端**不是并发安全的**：两个线程同时
+       ``VideoCapture(i)`` + ``release()`` 会直接触发
+       ``Windows fatal exception: code 0xc0000374``（堆损坏，进程级崩溃，
+       Python 层抓不住）。这个崩溃在测试里最容易复现：一个进程里连着建
+       十几个窗口，每个都起一个探测线程。
+
     ``open_camera`` 供测试注入假的开设备函数。
     """
     import cv2
@@ -210,17 +227,18 @@ def list_cameras(
 
     opener = open_camera if open_camera is not None else _open
     found: list[int] = []
-    for idx in range(max_index):
-        cap = None
-        try:
-            cap = opener(idx)
-            if cap.isOpened() and cap.grab():
-                found.append(idx)
-        except Exception:
-            logger.debug("探测摄像头 %d 时异常", idx, exc_info=True)
-        finally:
-            if cap is not None:
-                cap.release()
+    with _CAMERA_PROBE_LOCK:
+        for idx in range(max_index):
+            cap = None
+            try:
+                cap = opener(idx)
+                if cap.isOpened() and cap.grab():
+                    found.append(idx)
+            except Exception:
+                logger.debug("探测摄像头 %d 时异常", idx, exc_info=True)
+            finally:
+                if cap is not None:
+                    cap.release()
     return found
 
 

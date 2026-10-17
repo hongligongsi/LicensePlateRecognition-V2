@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 #: 与 pyproject.toml / cli.py / config.py 保持一致
-VERSION = "2.8.0"
+VERSION = "2.8.1"
 #: 低于此版本直接拒绝（Qt 6 与 typing 语法都需要）
 MIN_PY = (3, 10)
 #: 核心运行库 + 界面库，四项缺一不可

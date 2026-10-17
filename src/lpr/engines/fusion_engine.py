@@ -35,7 +35,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from ..config import EngineConfig
+from ..config import BEST_ENGINE_ORDER, EngineConfig
 from ..plate_rules import plate_score
 from ..types import PlateResult
 from ..utils.image import imread
@@ -85,8 +85,10 @@ AUTO_BLUR_PROBE_SIDE = 640
 #: 视作"检测网络"的成员（``auto`` 在小图/糊图上把它们提到最前）。
 #: ``deep`` 是"CV 定位引导 OCR"，``cv`` 是轮廓法，都算不上全局语义检测器。
 DETECTOR_MEMBERS = frozenset({"yolo"})
-#: ``auto`` 在清晰大图上的默认首选（与 ``EngineConfig.fusion_auto_clear_first`` 一致）
-DEFAULT_CLEAR_FIRST = "deep"
+#: ``auto`` 在清晰大图上的默认首选（与 ``EngineConfig.fusion_auto_clear_first`` 一致）。
+#: ``"auto"`` = 在**当前在岗的成员**里按 :data:`BEST_ENGINE_ORDER` 取最强的一个；
+#: 写死 ``"deep"`` 会让装了 yolo 权重的机器白白丢掉 10 个百分点（实测 89% → 79%）。
+DEFAULT_CLEAR_FIRST = "auto"
 
 #: 融合引擎自己的名字（成员里不允许出现它，否则递归）
 SELF_NAME = "fusion"
@@ -121,7 +123,7 @@ def blur_score(image: np.ndarray) -> float:
 def select_single_engine(
     image: np.ndarray,
     members: tuple[str, ...] | list[str],
-    clear_first: str = "deep",
+    clear_first: str = "auto",
 ) -> tuple[str, str]:
     """``auto`` 策略的排序器：按图像特征把成员排成一个"优先尝试顺序"。
 
@@ -129,7 +131,9 @@ def select_single_engine(
 
     * **小图或糊图** → 检测网络优先。车牌只占几个像素、或边缘已经糊掉时，
       轮廓法与 OCR 都容易失效，而检测网络靠全局语义找车牌。
-    * **较大且清晰的图** → ``clear_first`` 优先（默认 ``deep``）。
+    * **较大且清晰的图** → ``clear_first`` 优先（默认 ``"auto"``：
+
+      在岗成员里按 :data:`BEST_ENGINE_ORDER` 取最强的那个）。
 
     除首选之外**一律保持 ``members`` 的配置顺序** —— 早期版本在这里用了
     一份硬编码的 ``("deep", "yolo", "cv")``，导致用户配置的
@@ -139,8 +143,9 @@ def select_single_engine(
     Args:
         image: 待识别图像（只用来算尺寸与模糊度）。
         members: 可用成员名（已过滤掉不可用成员）。
-        clear_first: 图像清晰且够大时的首选成员名；不在 ``members`` 里
-            则退回 ``members`` 原顺序（不强行插一个没在岗的成员）。
+        clear_first: 图像清晰且够大时的首选成员名；``"auto"`` 表示按
+            :data:`BEST_ENGINE_ORDER` 在 ``members`` 里挑最强的；不在
+            ``members`` 里则退回 ``members`` 原顺序（不强行插一个没在岗的成员）。
 
     Returns:
         ``(首选, 理由)``。
@@ -148,6 +153,11 @@ def select_single_engine(
     ordered = list(members)
     if not ordered:
         raise ValueError("没有可用成员")
+
+    # ``auto`` → 落到具体成员名。放在这里而不是构造函数里：成员是否在岗
+    # 是运行时事实（权重/依赖可能被拔掉），构造时算一次就会过期。
+    if clear_first == "auto":
+        clear_first = next((m for m in BEST_ENGINE_ORDER if m in ordered), "")
 
     side = max(image.shape[:2]) if image is not None and image.size else 0
     blur = blur_score(image)

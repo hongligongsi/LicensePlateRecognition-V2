@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.8.0（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.8.1（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌 / 危险品运输牌。
 
@@ -6,11 +6,22 @@
 
 本项目是 [hongligongsi/License-Plate-Recognition](https://github.com/hongligongsi/License-Plate-Recognition) 的现代化升级版。原项目最后一次提交停留在 2021 年，其依赖（Python 3.4 / OpenCV 3.4 / numpy 1.14）在如今的机器上已无法安装。v2 在保留原算法思想的基础上全面重构。
 
-**一句话上手**（Windows，已装 Python 3.10+）：
+**一句话上手**（已装 Python 3.10+）：
 
 ```bat
-双击 start.bat
+双击 start.bat          :: Windows
 ```
+```bash
+./start.sh              # Linux / macOS
+```
+
+两个壳都只是**薄引导**：找解释器 → 建/复用 `.venv` → 装依赖 → 转交
+`tools/launcher.py`。加 `doctor` 参数（`start.bat doctor` / `./start.sh doctor`）
+是只读环境体检，不建 venv、不装包、不启动界面。
+
+**默认引擎是 `auto`**：按实测强度自动挑最强可用引擎（有权重用 `yolo`，
+否则 `deep`）。100 张 CCPD 上 `yolo` 89%、`deep` 79% —— 所以装了权重就该用它。
+特殊牌为主的话把 `engine.default` 写成 `deep` 或 `cascade`，见 §4.7。
 
 **一句话评效果**：`yolo` 引擎在 100 张 CCPD 上严格命中 89%，定位 100%；`deep` 引擎在特殊牌（港/警/领/学/双层）样张上 10/10。**没有全能引擎**，选哪个取决于你的车牌构成 —— 实测依据见 [docs/ACCURACY.md](docs/ACCURACY.md)。
 
@@ -418,6 +429,7 @@ logs/
 | 写不进去时 | 目录只读 / 磁盘满 / 被杀软占用 → **只降级为"不写文件"**并在 stderr 说明，绝不阻止程序启动 |
 | 关闭 | 命令行 `--no-log-file`，或环境变量 `LPR_LOG_FILE=0`，或 `config.json` 里 `"log_to_file": false` |
 | 界面里看 | 主窗口右下角有「运行日志」面板（读内存缓冲，不读文件），下面一行显示文件路径 + 「打开日志目录」按钮 |
+| 环境指纹 | 启动时打一行 `环境指纹: lpr <版本> · Python <版本> · NumPy <版本> · OpenCV <版本> · 引擎默认=<x> · 配置指纹=<8 位哈希>` —— 排查「同一张图昨天能认、今天认不出」时，先看是**代码变了 / 配置变了 / 环境变了**（配置指纹只对 `engine` 段敏感，改主题/日志级别不会让它变） |
 
 默认级别是 `INFO`，想看细节用 `lpr predict a.jpg --log-level DEBUG`。
 
@@ -431,6 +443,7 @@ logs/
 
 | 引擎 | 一句话 | 依赖 | 需要权重 | 实测中位耗时 |
 |---|---|---|---|---|
+| `auto` | **默认**：按实测强度挑最强可用引擎（yolo → deep → cv），不是独立实现 | 同被选中的引擎 | 同被选中的引擎 | 同被选中的引擎 |
 | `cv` | 传统 CV，快但精度有限 | 无 | 自动（入库） | **28 ms**（`samples/`）/ 37 ms（CCPD） |
 | `deep` | 定位引导 OCR，精度主力 | `rapidocr-onnxruntime` | 自动（随 wheel） | **194 ms**（`samples/`）/ 991 ms（CCPD） |
 | `cascade` | `cv` 定位 + `deep` 识别（= deep 的**别名**，非独立引擎） | 同 `deep` | 自动 | 同 `deep` |
@@ -464,7 +477,7 @@ OpenCV 形态学定位 + 投影分割 + SVM 字符识别（兼容原版模型）
 - **补救预处理**（v2.7.2）：主计划全部落空时，换**增强方式**（去噪 / CLAHE / OTSU 二值化）再试一轮；
 - **语法纠错**：`plate_rules` 按真实车牌规则纠错（I/O 不合法、发牌机关须为字母、末位降级）。
 
-### 4.4 `cascade` —— 级联（默认引擎）
+### 4.4 `cascade` —— 级联（`deep` 的别名）
 
 CV 快速定位给出候选 → 深度引擎精识别，是**精度与速度的折中**，也是 `config.json` 里的默认值。
 
@@ -547,7 +560,8 @@ CV 快速定位给出候选 → 深度引擎精识别，是**精度与速度的�
   日志也会列出号码。想取并集（最大召回）把 `fusion_min_support` 设成 1。
 
 **实测：融合目前不提升识别率**（100 张 CCPD 三种策略的严格命中都不超过最强单成员
-`yolo` 的 89%），因为 `deep` 的命中集合是 `yolo` 的**子集** —— 成员之间没有互补。
+`yolo` 的 89%），但把 `fusion_auto_clear_first` 设成 `auto`（v2.8.1 起的默认）后
+`fusion(auto)` 会路由到 yolo，实测 82% → 89%、误检 17 → 6、中位 888 → 207 ms，因为 `deep` 的命中集合是 `yolo` 的**子集** —— 成员之间没有互补。
 它的真实价值是**更少的误检**（ensemble 2 条 vs yolo 6 / deep 14 / cv 691）；
 代价是 `ensemble` 的准入规则**很脆**：任何一个成员的读数变化都会让"两成员投同一号码"
 的组散掉，该图直接零产出（v2.8.0 就因此让它从 84 掉到 82）。
@@ -556,17 +570,19 @@ CV 快速定位给出候选 → 深度引擎精识别，是**精度与速度的�
 ### 4.7 怎么选
 
 ```text
+不想写死、让程序自己挑                     → auto（默认：有权重用 yolo，否则 deep）
 常规车牌为主（蓝牌/绿牌，场景清晰）        → yolo（若有权重），否则 deep
-含港/警/领/学/双层等特殊牌                 → deep
+含港/警/领/学/双层等特殊牌                 → deep 或 cascade
 想要最少误检、不在乎 2 秒/张               → fusion(ensemble)
 要快、能容忍误检                           → fusion(chain)
-只想挑一个但不想写死                       → fusion(auto) + fusion_auto_clear_first
 只想快速筛一遍候选、精度不重要              → cv
 ```
 
-**不要**把默认引擎写死成 `yolo` 或 `deep` 中任何一个：CCPD 常规牌上 `yolo` 领先 10 个百分点
+**为什么默认是 `auto` 而不是写死某个引擎**：CCPD 常规牌上 `yolo` 领先 10 个百分点
 （89% vs 79%），而特殊牌自有样张上 `deep` 全对（10/10 vs yolo 8/10）—— 两套数据**排名反转**。
-按你的车牌构成选，或用 `fusion(auto)` 交给配置。
+写死任何一边都会在另一边付出代价，所以默认交给可用性去挑：**没装 yolo 权重的机器上
+`auto` 就等价于 `deep`**（旧默认 `cascade` 的行为），装了权重才吃到那 10 个百分点。
+特殊牌为主的话，把 `engine.default` 显式写成 `deep` —— 那是唯一需要改的一处。
 
 ---
 
@@ -997,7 +1013,7 @@ for plate in tracker.update(engine.predict(frame)):
 
 | 字段 | 默认 | 取值 | 说明 |
 |---|---|---|---|
-| `default` | `"cascade"` | `cv` / `deep` / `cascade` / `yolo` / `fusion` | 默认引擎。`cascade` 是 `deep` 的别名（非独立引擎，界面里是可选中项，见 §4.4） |
+| `default` | `"auto"` | `auto` / `cv` / `deep` / `cascade` / `yolo` / `fusion` | 默认引擎。`auto` = 按实测强度挑最强**可用**引擎（`yolo` → `deep` → `cv`，见 §4.7）；`cascade` 是 `deep` 的别名（非独立引擎，界面里是可选中项，见 §4.4） |
 | `mode` | `"single"` | `single` / `cascade` | **跨引擎兜底**：`cascade` 时主引擎返回空会自动再试另一个可用引擎 |
 | `use_confidence` | `true` | 布尔 | CV 引擎字符识别是否启用 SVM 置信度加权投票 |
 
@@ -1048,6 +1064,7 @@ for plate in tracker.update(engine.predict(frame)):
 |---|---|---|---|
 | `secondary_rec_model` | `""` | 路径 | 第二识别模型（ONNX）路径，用于**低置信交叉验证**。空 = 关闭 |
 | `secondary_vote_weight` | `0.8` | `(0, 1]` | 第二模型读数的票权折扣 |
+| `rescue_preprocess` | `true` | `true` / `false` | 补救预处理：主识别计划全部落空时换一组增强图像重试。`yolo` 上 +1 张、`deep` 上 **0 张但多花约 30% 时间**，吞吐敏感可关（见 [ACCURACY.md §5.3](docs/ACCURACY.md)） |
 | `yolo_attr_order` | `"kpt_first"` | `kpt_first` / `cls_first` | yolo 检测输出的属性列顺序（见 [§4.5](#45-yolo--检测识别引擎)） |
 | `yolo_recognize_backend` | `"auto"` | `auto` / `crnn` / `deep` / `none` | yolo 的字符识别后端。`auto` = 优先自带 `plate_rec.onnx`，没有则复用 deep 的 OCR |
 | `yolo_models_dir` | `""` | 路径 | yolo 权重目录。空 = `<项目根>/models/yolo` |
@@ -1056,9 +1073,11 @@ for plate in tracker.update(engine.predict(frame)):
 | `fusion_engine_weights` | `{"yolo":1.0,"deep":1.0,"cv":0.6}` | 字典 | 各成员票权（仅 `ensemble` 用） |
 | `fusion_group_iou` | `0.4` | `(0, 1]` | 归为一组的 IoU 阈值 |
 | `fusion_chain_accept` | `0.75` | `[0, 1]` | `chain` 的"够可信"门槛 |
-| `fusion_auto_clear_first` | `"deep"` | 成员名 | `auto` 在**清晰大图**上先试哪个成员 |
+| `fusion_auto_clear_first` | `"auto"` | `auto` / 成员名 | `auto` 策略在**清晰大图**上先试哪个成员。`auto` = 在岗成员里按实测强度取最强（有权重就是 `yolo`）；写死成员名则照办 |
 | `fusion_min_support` | `2` | `≥1` | 融合结果要留下所需的最少一致成员数 |
 | `fusion_trusted_weight` | `1.0` | `≥0` | 单成员独存所需的票权阈值 |
+
+**`rescue_preprocess` 为什么是开关而不是常量**：它换的是图像、不换模型，对 `yolo`（+1 张）和 `deep`（0 张）的收益完全不同 —— 两者共用同一条识别管线，所以只能做成引擎级开关交给使用场景决定。
 
 **`secondary_rec_model` 为什么默认关闭**：100 张 CCPD 实测开启后严格命中**一张未变**
 （失败集合逐张相同），`deep` 耗时却 ×2.9（716→2042 ms）。机制没问题（只在该失败的路径上激活，
@@ -1383,7 +1402,12 @@ samples/  img/          # 真实测试样张（回归基线与准确率门槛的
 logs/                   # 运行日志（自动创建；主进程 + 每个子进程一个文件）—— §3.8
 start.bat               # Windows 一键启动（纯 ASCII 引导壳 → tools/launcher.py → 界面）
                         #   加 doctor 参数为只读环境体检
-tests/                  # 1262 项 pytest 测试（含 tests/baselines/ 行为基线）
+start.sh                # Linux / macOS 版本，同一套引导逻辑（POSIX sh，无额外依赖）
+annotated/  out/        # **运行产物**，两个目录都由程序/工具写出、可随时删：
+                        #   annotated/ = `--save-annotated` 画的标注图
+                        #   out/       = 评测/调参脚本的 CSV/JSON 输出
+                        #   均在 .gitignore 里，不属于源码
+tests/                  # 1305 项 pytest 测试（含 tests/baselines/ 行为基线）
 .github/workflows/ci.yml   # CI：ruff + mypy + 多版本 pytest
 docs/UPGRADE.md         # 与原项目的详细对比（逐版本）
 docs/ACCURACY.md        # 准确率实测与提升路线（v2.7.0 首测，v2.7.2 / v2.8.0 增补）
@@ -1400,18 +1424,18 @@ docs/screenshot.png     # 界面截图（README 顶部引用）
 
 ```bash
 pip install -e ".[dev,gui]"                         # 测试需要 Qt（GUI 用例）
-pytest tests/ -q                                    # 1262 项单元/集成测试
+pytest tests/ -q                                    # 1305 项单元/集成测试
 pytest tests/ -q -m "not slow"                      # 跳过会起多进程的较重用例
 pytest tests/ -q --timeout=300                       # 建议加超时（CI 就是这么跑的）
 ruff check src tools tests && mypy                  # 静态检查
 ```
 
-### 13.2 测试规模（1262 项，按文件）
+### 13.2 测试规模（1305 项，按文件）
 
 | 测试文件 | 项数 | 覆盖 |
 |---|---|---|
 | `test_quad_ordering.py` | 206 | 角点排序与透视矫正（±89° 全范围） |
-| `test_fusion_engine.py` | 83 | 融合三策略、准入规则、成员退席、auto 路由 |
+| `test_fusion_engine.py` | 84 | 融合三策略、准入规则、成员退席、auto 路由（含"最强在岗"首选） |
 | `test_special_plates.py` | 81 | 军/警/使领馆/武警等特种号牌语法与判色 |
 | `test_yolo_engine.py` | 79 | letterbox / 解码 / NMS / 逆变换 / 角点矫正 / 识别计划透传 |
 | `test_launch_env.py` | 73 | 启动器：资产清单、引擎判定、doctor 只读性、预检、日志目录 |
@@ -1428,15 +1452,17 @@ ruff check src tools tests && mypy                  # 静态检查
 | `test_ccpd_to_yolo.py` | 35 | 数据集转换（角点重排、单/双层、划分确定性） |
 | `test_batch_parallel.py` | 31 | 多进程：顺序、隔离、ROI 取舍、退回串行、子进程日志 |
 | `test_deep_preprocess.py` | 30 | 预处理算子 / 放大 / 早停 |
-| `test_engine_choices.py` | 22 | 引擎清单契约：`cascade` 别名可选、界面不改配置、偏好落盘 |
+| `test_engine_choices.py` | 22 | 引擎清单契约：别名可选、界面不改配置、偏好落盘 |
+| `test_auto_engine.py` | 28 | `auto` 策略：默认值、解析与退化、`cascade` 语义不被劫持、界面可选 |
+| `test_environment_fingerprint.py` | 9 | 环境指纹：必含字段、只对识别相关配置敏感、不主动 import |
 | `test_regression_baseline.py` | 22 | 真实样张定位行为快照 |
 | `test_tracker.py` | 22 | 跨帧跟踪与同图去重 |
 | `test_eval_weak.py` | 18 | 弱监督评测 |
 | `test_api.py` | 17 | 高层 API 与导出 |
-| `test_rescue_preprocess.py` | 16 | 补救预处理（纯函数契约 + 零回归 + 预算） |
+| `test_rescue_preprocess.py` | 18 | 补救预处理（纯函数契约 + 零回归 + 预算 + 开关） |
 | `test_config_and_types.py` | 13 | 配置校验与数据契约 |
 | `test_deep_accuracy.py` | 14 | deep 引擎准确率门槛 + 早停语义（广度块/短牌/弱位） |
-| `test_camera_probe.py` | 8 | 摄像头设备枚举与排查提示 |
+| `test_camera_probe.py` | 9 | 摄像头设备枚举、排查提示、**探测串行化**（防 0xc0000374 崩溃） |
 | `test_hard_samples_accuracy.py` | 8 | 对抗退化样张（模糊/噪点/倾斜…） |
 | `test_segment.py` | 7 | 字符分割 |
 | `test_secondary_cross_validation.py` | 6 | 第二识别模型交叉验证接线 |
@@ -1633,7 +1659,9 @@ python tools/shot.py reports/ui.png --sample samples/1.jpg
 ### 15.3 集成与部署
 
 - **`Python API` 的 `engine` 参数默认是 `"auto"`，不读 `config.engine.default`**：
-  想让 API 也用配置里的默认引擎，要显式传 `Recognizer(engine=config.engine.default)`。
+  两者的**取值**从 v2.8.1 起恰好相同（都是 `auto`），但仍是两件独立的事 ——
+  配置文件里改成 `deep` 不会影响 `Recognizer()` 的默认参数。想让 API 也用配置里的
+  默认引擎，要显式传 `Recognizer(engine=config.engine.default)`。
 - **`doctor` 与启动器的引擎判定只看默认权重路径**：它检查的是 `models/svm*.dat` 与
   `models/yolo/plate_det.onnx`（即 `EngineConfig` 的默认值）。如果你用
   `engine.yolo_models_dir` 之类的配置把权重放到别处，启动器仍会报「不可用」——
@@ -1786,6 +1814,7 @@ GPL-3.0；但依据 MIT 的保留条款，**原作者的版权与许可声明必
 | **v2.7.2** | 提准确率（补救预处理）+ 界面双主题，并整理待办清单 |
 | **v2.7.3** | 运行日志落盘（轮转 + 多进程分文件），修好界面「运行日志」面板 |
 | **v2.7.4** | 界面不再把默认引擎 `cascade` 悄悄换成 `cv`（准确率 10/11 → 0/11）；主题/引擎选择真正写回配置 |
+| **v2.8.1** | 默认引擎改成策略名 `auto`：按实测强度挑最强可用引擎（有权重用 `yolo` 89%，否则 `deep` 79%）；`fusion_auto_clear_first` 同步改为 `auto`（`fusion(auto)` 82 → 89%）；补救预处理加开关；日志加环境指纹；补 `start.sh`；修相机探测并发导致的进程级崩溃 |
 | **v2.8.0** | 识别计划按 ROI 来源分流：检测网络 ROI 用"同尺度换假设"的新计划（`yolo` 严格命中 85 → **89%**），CV 定位 ROI 保持"只换尺度"的老计划（`deep` 零退化） |
 
 **待完善清单**见 [docs/ROADMAP.md](docs/ROADMAP.md)（按「用户可感知收益 ÷ 实现风险」排序）。

@@ -143,11 +143,25 @@ class TestSelectSingleEngine:
         pick, _ = select_single_engine(blurry_image((1000, 1200)), ("yolo", "deep", "cv"))
         assert pick == "yolo"
 
-    def test_large_sharp_image_prefers_deep(self):
+    def test_large_sharp_image_prefers_strongest_available(self):
+        """默认 ``clear_first="auto"``：在岗成员里按实测强度取最强（yolo 89% > deep 79%）。"""
         pick, why = select_single_engine(sharp_image((1000, 1400)), ("yolo", "deep", "cv"))
-        assert pick == "deep"
+        assert pick == "yolo"
         assert "清晰且够大" in why
-        assert "deep" in why
+        assert "yolo" in why
+
+    def test_large_sharp_image_falls_back_when_the_strongest_is_absent(self):
+        """没装 yolo 权重的机器上 ``auto`` 必须安静地落到 deep —— 不能报错。"""
+        pick, _ = select_single_engine(sharp_image((1000, 1400)), ("deep", "cv"))
+        assert pick == "deep"
+
+    def test_explicit_deep_is_never_upgraded(self):
+        """显式写 ``deep`` 就按用户写的来 —— ``auto`` 不做"更懂你"的替换。"""
+        pick, why = select_single_engine(
+            sharp_image((1000, 1400)), ("yolo", "deep", "cv"), clear_first="deep"
+        )
+        assert pick == "deep"
+        assert "yolo" not in why
 
     def test_clear_first_is_honoured_when_it_is_a_member(self):
         """CCPD 实测：清晰大图首选 yolo 能比默认多救 4 张（docs/ACCURACY.md）。"""
@@ -523,12 +537,24 @@ class TestAutoStrategy:
         assert members["deep"].calls == 0
         assert "检测网络" in out[0].meta["fusion"]["reason"]
 
-    def test_large_sharp_image_routes_to_deep(self):
+    def test_large_sharp_image_routes_to_strongest_available(self):
+        """清晰大图默认走最强在岗成员（``auto``），不再写死 deep。"""
         members = {
             "yolo": FakeMember("yolo", [res("yolo", "京A12345")]),
             "deep": FakeMember("deep", [res("deep", "沪B67890")]),
         }
         engine = build(members, strategy=STRATEGY_AUTO)
+        out = engine.predict(sharp_image((1000, 1400)))
+        assert out[0].text == "京A12345"
+        assert members["deep"].calls == 0
+
+    def test_clear_first_deep_still_wins_when_explicitly_configured(self):
+        """特殊牌为主的用户把 clear_first 写死 deep，路由必须照办。"""
+        members = {
+            "yolo": FakeMember("yolo", [res("yolo", "京A12345")]),
+            "deep": FakeMember("deep", [res("deep", "沪B67890")]),
+        }
+        engine = build(members, strategy=STRATEGY_AUTO, clear_first="deep")
         out = engine.predict(sharp_image((1000, 1400)))
         assert out[0].text == "沪B67890"
         assert members["yolo"].calls == 0

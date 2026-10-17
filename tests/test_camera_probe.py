@@ -81,6 +81,40 @@ class TestListCameras:
     def test_no_devices_returns_empty_list(self):
         assert list_cameras(2, open_camera=lambda _i: FakeCap(openable=False)) == []
 
+    def test_concurrent_probes_never_overlap(self):
+        """探测必须串行 —— 这是防进程级崩溃的护栏，不是性能优化。
+
+        Windows 的 DirectShow/MSMF 后端并发 ``VideoCapture`` + ``release``
+        会触发 ``0xc0000374``（堆损坏，Python 层抓不住）。界面给每个窗口起
+        一个探测线程，测试里一个进程连建十几个窗口，所以必须锁住。
+
+        判据：两个线程同时进来，任一时刻"正在探测"的计数不得大于 1。
+        """
+        import threading
+        import time
+
+        state = {"inside": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def opener(_idx: int):
+            with lock:
+                state["inside"] += 1
+                state["peak"] = max(state["peak"], state["inside"])
+            time.sleep(0.01)
+            with lock:
+                state["inside"] -= 1
+            return FakeCap(openable=False)
+
+        threads = [
+            threading.Thread(target=lambda: list_cameras(3, open_camera=opener)) for _ in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert state["peak"] == 1
+
 
 class TestCameraErrorMessage:
     def test_no_devices_gives_an_actionable_checklist(self):

@@ -59,6 +59,7 @@ from .. import __version__
 from ..config import Config
 from ..engines import describe_engine_choices
 from ..types import PlateColor, PlateResult
+from ..utils.environment import log_environment
 from ..utils.image import imread, to_display_rgb
 from ..utils.logging_setup import (
     current_log_file,
@@ -1150,13 +1151,26 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- 摄像头
 
     def _probe_cameras(self) -> None:
-        """在后台线程里枚举可用摄像头（纯 cv2 操作，不碰任何 UI 对象）。"""
+        """在后台线程里枚举可用摄像头（纯 cv2 操作，不碰任何 UI 对象）。
+
+        两个都真实踩过的坑：
+
+        * 探测本身可能被多个窗口并发发起 —— 串行化在
+          ``worker.list_cameras`` 里（Windows 的 DirectShow 并发开设备会
+          堆损坏，进程直接崩）；
+        * 探测比窗口寿命长时，``emit`` 会抛 ``RuntimeError: Signal source has
+          been deleted``（Python 包装还在、C++ 对象已析构）。结果没人要，
+          忽略即可 —— 但它会污染 stderr，所以显式处理而不是让它冒出去。
+        """
         try:
             found = list_cameras()
         except Exception:
             logger.warning("摄像头探测失败", exc_info=True)
             found = []
-        self.cameras_found.emit(found)
+        try:
+            self.cameras_found.emit(found)
+        except RuntimeError:
+            logger.debug("窗口已关闭，丢弃摄像头探测结果")
 
     def _on_cameras_found(self, found: list) -> None:
         self.camera_combo.clear()
@@ -1435,6 +1449,8 @@ def run_ui(config: Config | None = None) -> None:
     # 于是「运行日志」面板永远空白，而且 ``logger.propagate`` 一直是 True
     # （日志顺着根 logger 走，INFO 级被直接丢掉）。这里补上，幂等。
     setup_logging(**config.logging_kwargs())
+    # 一行环境指纹：排查"同一张图昨天能认、今天认不出"时先看这里
+    log_environment(config)
 
     app = QApplication(sys.argv)
     app.setApplicationName("车牌识别系统 v2")

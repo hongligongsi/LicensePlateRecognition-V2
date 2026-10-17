@@ -2929,3 +2929,127 @@ DETECT_PLAN = RecognizePlan(
 * `deep` 的瓶颈**不在识别**（21 张未命中里 10 张"无框"），本版没动定位器；
 * `fusion(ensemble)` 的准入规则脆弱性**只做了归因，没动实现** ——
   改它等于重走 v2.6.0 用 `fusion_min_support=1` 换来 691 条误检的老路，必须单独实验。
+
+---
+
+# v2.8.1 —— 默认引擎按"实测强度"挑，而不是写死 deep
+
+v2.8.0 把 `yolo` 的严格命中从 85% 提到 89%，但**默认引擎仍是 `cascade`（= deep，79%）**。
+也就是说：装了 `yolo` 权重、什么都没改的用户，拿到的还是那个落后 10 个百分点的引擎。
+这一版不改任何算法，只改"默认选谁"和几处工程债。
+
+## 一、起点：一个明显的浪费
+
+```
+engine.default 默认 = "cascade"  →  解析成 deep  →  100 张 CCPD 命中 79/100
+可用引擎里有 yolo                →  命中 89/100
+```
+
+更糟的是 `fusion(auto)`：它的"清晰大图先试谁"写死 `deep`，实测 85/100 张图被路由到
+deep，于是 `fusion(auto)` 只有 82%——**比它自己最强的成员还低 7 张**。这一条在 v2.7.0
+就量到了，当时的结论是"留成配置项，谁需要谁改"。v2.8.1 换个角度处理：**默认值不该
+要求用户先读文档**。
+
+## 二、改了什么
+
+### 1. `auto` 成为一等引擎取值
+
+```python
+# config.py
+ENGINE_CHOICES = ("auto", "cv", "deep", "cascade", "yolo", "fusion")
+BEST_ENGINE_ORDER = ("yolo", "deep", "cv")   # 按实测严格命中排，不按名义新旧
+EngineConfig.default = "auto"
+```
+
+`auto` 此前只是 `Recognizer(engine=...)` 的**默认实参**（内部解析成 deep → cv），
+配置里写不了。现在它是 `ENGINE_CHOICES` 的成员，也进了 `ALIAS_ENGINES`（因此界面下拉框
+能选中它、`lpr engines` 会列它）。这条"别名必须出现在下拉框里"的教训来自 v2.7.4 ——
+配置里的值一旦不在清单里，界面就静默降级成第一项 `cv`（准确率 10/11 → 0/11）。
+
+**为什么没有回归风险**：`yolo` 权重不入库，没装权重的机器上 `yolo.is_available()` 为
+False，`auto` 直接落到 `deep` —— 与旧默认 `cascade` 的行为**完全相同**。只有"本来就有
+更强引擎"的用户，结果才会变（变好）。
+
+### 2. `cascade` 的语义没被顺手改掉
+
+两套偏好序刻意不合并：
+
+| 策略 | 顺序 | 语义 |
+|---|---|---|
+| `auto` | `yolo → deep → cv` | "你替我挑最强的" |
+| `cascade` | `deep → cv` | "我要 deep，它挂了再退 cv" |
+
+`test_auto_engine.py::test_best_order_is_not_the_cascade_order` 钉住这一点：
+合并就会让 `cascade` 名不副实（用户明确选的东西被悄悄换成 yolo）。
+
+### 3. `fusion_auto_clear_first` 默认 `"auto"`
+
+在**当前在岗成员**里按 `BEST_ENGINE_ORDER` 取最强。解析放在 `select_single_engine`
+里而不是构造函数里：成员是否在岗是运行时事实（权重/依赖可能被拔掉），构造时算一次
+就会过期。实测 `fusion(auto)` 82% → **89%**、误检 17 → 6、中位 888 → 207 ms。
+
+显式写 `deep` / `yolo` / `cv` 的配置**照办**，`auto` 不做"更懂你"的替换
+（`test_explicit_deep_is_never_upgraded`）。
+
+### 4. 补救预处理加开关
+
+`engine.rescue_preprocess: bool = True`。实测 `yolo` +1 张、`deep` **0 张**却 +30% 耗时
+（716 → 991 ms），所以这个开关对"以 deep 为主的服务"是纯赚。它是**引擎级**的：
+两者共用同一条识别管线，只是识别计划不同。
+
+### 5. 日志加环境指纹
+
+启动时一行：
+
+```
+环境指纹: lpr 2.8.1 · Python 3.13.12 (Windows) · NumPy 2.5.4 · OpenCV 4.14.0 · 引擎默认=auto · 配置指纹=4db13ca4
+```
+
+排查"同一张图昨天能认、今天认不出"时，先看是**代码变了 / 配置变了 / 环境变了**。
+配置指纹只哈希 `engine` 段（含 `locate` 与 `fusion` 的全部阈值）：改主题/日志级别
+不会让同一张图读出不同的车牌，混进来只是噪音。cv2 / numpy 取**已加载**模块的版本，
+没加载就写"未加载"——不为打印版本号把 OpenCV 拉起来。
+
+### 6. `start.sh`
+
+与 `start.bat` 同构的薄引导壳（POSIX sh，无额外依赖）：`LPR_PYTHON` → `.venv/bin/python`
+→ `python3` → `python`，每个候选都真跑一次 `-c "import sys"` 淘汰坏解释器，
+然后转交 `tools/launcher.py`。只在"失败 + 真终端"时等回车 —— 管道调用不该被卡住。
+
+### 7. 修掉一个进程级崩溃（写测试时被逼出来的）
+
+跑「6 个测试文件一起」时进程反复 `Windows fatal exception: code 0xc0000374`
+（堆损坏，Python 层抓不住）。栈顶统一是：
+
+```
+worker.py:209 _open → list_cameras → window.py:1155 _probe_cameras → threading
+```
+
+根因：界面给**每个** `MainWindow` 起一个线程去扫摄像头（0~7 号逐个 `VideoCapture` +
+`release`），而 Windows 的 DirectShow/MSMF 后端**不是并发安全的**。测试里一个进程连建
+十几个窗口，于是多个线程同时开设备 → 堆损坏。同一个位置还会抛
+`RuntimeError: Signal source has been deleted`（窗口先关了、探测还在跑）。
+
+修法两处：`list_cameras` 整段加 `_CAMERA_PROBE_LOCK` 串行化；`emit` 前判窗口是否
+已析构（`try/except RuntimeError`）。加了一条并发用例，判据是"任一时刻正在探测的
+计数不得大于 1"。
+
+## 三、验证
+
+* 全量 `pytest` **1305 项全过**（1262 + 43，新增 `test_auto_engine.py` 28 项、
+  `test_environment_fingerprint.py` 9 项、`test_camera_probe.py` +1、`test_rescue_preprocess.py` +2、
+  `test_fusion_engine.py` +3-2）；`ruff check` / `ruff format --check` / `mypy` 全绿；
+* 本机（有权重）实测：`_resolve_engine("auto") == "yolo"`、`_resolve_engine("cascade") == "deep"`；
+  环境指纹实际输出见上；
+* 无权重环境的行为由测试模拟（`monkeypatch` 掉 `is_available`）：`auto → deep`、`auto → cv`、
+  全不可用则 `EngineUnavailable`。
+
+## 四、仍然没做
+
+* **没动 `fusion(ensemble)` 的准入规则**（ROADMAP 5c）—— 那需要单独实验；
+* **没有扩大评测集**：`datasets/ccpd_raw` 里 654 张图仍然没有真值。本版顺手查清了
+  一个旧结论是错的：真值**不是**被 `fetch_ccpd.py` 改名弄丢的，ModelScope 镜像本身
+  就存成 `sample_N.jpg`（详见 ROADMAP「一、4」的订正）。所以"再下载时保留原始文件名"
+  这条走不通，扩真值只能靠标注；
+* **没有多引擎准确率的横向验证**：`auto` 的收益来自"路由到 yolo"，而 yolo 的 89% 与
+  deep 的 79% 都是 100 张 CCPD 上的数字，抽样误差 ±3pp 量级 —— 顺序是对的，幅度别当精确值。

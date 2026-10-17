@@ -234,10 +234,19 @@ def test_cascade_not_used_when_primary_hits(registered, monkeypatch):
 
 
 def test_mode_documented_as_orthogonal_to_default():
-    """default 与 mode 是两个正交维度，默认值不应自相矛盾。"""
+    """default 与 mode 是两个正交维度，默认值不应自相矛盾。
+
+    这里**不要**再抄一份引擎白名单：抄一份就会和 ``config.ENGINE_CHOICES`` 走散
+    —— 本用例就因为 v2.8.1 把默认值改成策略名 ``auto`` 而失效过一次。
+    """
+    from lpr.config import ENGINE_CHOICES
+
     cfg = EngineConfig()
-    assert cfg.default in ("cv", "deep", "cascade")
+    assert cfg.default in ENGINE_CHOICES
     assert cfg.mode in ("single", "cascade")
+    # 正交性：mode 换了不影响 default 的取值合法性，反之亦然
+    assert EngineConfig(default=cfg.default, mode="cascade").default == cfg.default
+    assert EngineConfig(default="deep", mode=cfg.mode).mode == cfg.mode
 
 
 # ══════════════════════════════════════════════════════════════════

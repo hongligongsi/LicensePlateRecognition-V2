@@ -134,18 +134,35 @@ class LocateConfig:
 
 #: 可作为 ``engine.default`` 的取值（**单一事实来源**）。
 #:
-#: 这里既有真引擎（``cv`` / ``deep`` / ``yolo`` / ``fusion``），也有 ``cascade``
-#: 这个**别名**（解析成 deep；deep 内部本就是"CV 定位 → 纯识别"的级联）。
+#: 这里既有真引擎（``cv`` / ``deep`` / ``yolo`` / ``fusion``），也有两个
+#: **策略别名**：``auto``（按实测强度挑最强可用引擎，见
+#: :data:`BEST_ENGINE_ORDER`）与 ``cascade``（解析成 deep；deep 内部本就是
+#: "CV 定位 → 纯识别"的级联）。
 #: 之所以收成常量：此前 ``("cv", "deep", "cascade")`` 在白名单里抄了三份
 #: （config.validate / cli 的 argparse choices ×2），加第三个引擎时漏改
 #: 一处就会出现"config 认、CLI 不认"的割裂。
-ENGINE_CHOICES = ("cv", "deep", "cascade", "yolo", "fusion")
+ENGINE_CHOICES = ("auto", "cv", "deep", "cascade", "yolo", "fusion")
+
+#: ``auto`` 挑"最强可用引擎"的顺序：**按实测严格命中率排，不按名义上的新/旧**。
+#:
+#: 100 张 CCPD 实测（``docs/ACCURACY.md`` §2.1）：``yolo`` 89%、``deep`` 79%、
+#: ``cv`` 0%。所以只要有权重就用 yolo —— 这与"yolo 权重不入库"并不矛盾：
+#: 没有权重的机器上 ``yolo`` 的 ``is_available()`` 为 False，``auto`` 自动落到
+#: ``deep``，行为与旧版默认（``cascade``）完全一致。
+#:
+#: ⚠️ **这不是"yolo 处处更强"**：特殊牌（港/警/领/学/双层）自有样张上
+#: ``deep`` 10/10、``yolo`` 8/10，排名反转（§4）。默认值按"常规牌占绝大多数"
+#: 的现实取 yolo 优先；如果你的车牌构成以特殊牌为主，把 ``engine.default``
+#: 显式写成 ``deep`` 或 ``cascade`` —— 那是唯一需要改的一处配置。
+BEST_ENGINE_ORDER = ("yolo", "deep", "cv")
 
 #: ``cascade`` 解析成**具体引擎**的尝试顺序：先 ``deep``（"CV 定位 → 纯识别
 #: 网络"的级联就是它的内在行为），deep 不可用再退 ``cv``。
 #:
 #: 与 ``ENGINE_CHOICES`` 一样是**单一事实来源**：``api.Recognizer._resolve_engine``
 #: 用它挑引擎，界面下拉框用它算 ``cascade`` 的可用性与"退化后会跑谁"。
+#: （``auto`` **不用**它 —— 那是个独立的偏好序，见 :data:`BEST_ENGINE_ORDER`；
+#: 这里刻意不合并：``cascade`` 的语义是"deep 的别名"，永远不该悄悄变成 yolo。）
 #: 两边各写一份的话，界面提示就会和运行时实际干的活分叉。
 #:
 #: 注意别和 ``api.CASCADE_ORDER = ("cv", "deep")`` 混淆：那是
@@ -176,10 +193,12 @@ class EngineConfig:
     """
 
     #: 默认引擎：
-    #:   ``"cv"``（传统，快但精度有限）| ``"deep"``（深度学习，推荐）
+    #:   ``"auto"``（**默认**，按实测强度挑最强可用引擎：yolo → deep → cv，
+    #:   见 :data:`BEST_ENGINE_ORDER`）
+    #:   | ``"cv"``（传统，快但精度有限）| ``"deep"``（深度学习）
     #:   | ``"cascade"``（= deep，含 CV 定位引导）
     #:   | ``"yolo"``（检测识别引擎，需自备 ONNX 权重，见 models/yolo/README.md）
-    default: str = "cascade"
+    default: str = "auto"
     #: 跨引擎兜底策略："single"（只跑主引擎）| "cascade"（主引擎未命中时再试另一个可用引擎）
     mode: str = "single"
     #: 传统 CV 引擎参数
@@ -202,6 +221,22 @@ class EngineConfig:
     #: 第二模型读数的票权折扣（0~1]。主模型读数权为 1，第二模型略低，
     #: 避免在两模型意见相左时反客为主。
     secondary_vote_weight: float = 0.8
+
+    #: 补救预处理：主识别计划**全部落空**时，换一组"增强"图像再试一次
+    #: （见 ``deep_engine._RESCUE_VARIANTS``）。
+    #:
+    #: 实测收益**因引擎而异**（``docs/ACCURACY.md`` §5.3 / §5.5）：
+    #:
+    #: * ``yolo``：+1 张严格命中，字符级 +2.9pp，「有框无字」8 → 4 张；
+    #: * ``deep``：识别收益 **0 张**（它的失败多是"无框"，不是"读不出"），
+    #:   却要为它付约 30% 的耗时（716 → 991 ms/张，中位数）。
+    #:
+    #: 所以留成开关：吞吐敏感、且以 ``deep`` 为主的服务可以关掉。
+    #: 默认 ``True``（= v2.7.2 起的行为，不动）。
+    #:
+    #: 注意这是**引擎级**开关而不是 ``deep`` 专属：``yolo`` 复用同一条识别
+    #: 管线（只是识别计划不同），关掉它对两者同时生效。
+    rescue_preprocess: bool = True
 
     #: yolo 引擎：检测模型输出的**属性列顺序**：``"cls_first"``
     #: （Ultralytics 导出：box+cls+kpts）| ``"kpt_first"``（we0091234 系：
@@ -245,11 +280,15 @@ class EngineConfig:
     #: ``auto`` 的"够可信"判定之外唯一的可调项：**图像清晰且够大时**先试哪个成员。
     #: 小图/糊图固定检测网络（``yolo``）优先，不归它管。
     #:
-    #: 默认 ``"deep"``。为什么留成配置而不是写死：两套实测数据指向相反 ——
-    #: CCPD 常规牌上 yolo 更强（84% vs deep 79%），而特殊牌（港/警/领/学/双层）
-    #: 自有样张上 deep 全对（10/10 vs yolo 8/10）。写死任何一边都会在另一边
-    #: 付出代价，见 ``docs/ACCURACY.md``。
-    fusion_auto_clear_first: str = "deep"
+    #: 默认 ``"auto"`` = 在**当前在岗的成员**里按 :data:`BEST_ENGINE_ORDER`
+    #: 取最强的一个（有权重就是 yolo）。为什么默认不是写死的名字：两套实测
+    #: 数据指向相反 —— CCPD 常规牌上 yolo 更强（89% vs deep 79%），而特殊牌
+    #: （港/警/领/学/双层）自有样张上 deep 全对（10/10 vs yolo 8/10）。
+    #: 写死任何一边都会在另一边付出代价，见 ``docs/ACCURACY.md`` §5.2。
+    #:
+    #: 显式写成员名（``"deep"`` / ``"yolo"`` / ``"cv"``）就按你写的来，
+    #: 不做任何"更懂你"的替换。
+    fusion_auto_clear_first: str = "auto"
     #: 融合结果要留下所需的**最少一致成员数**（``ensemble`` 用）。
     #: 默认 2 = 至少两个成员一致才留（或票权达到 ``fusion_trusted_weight``
     #: 的成员独存）。
@@ -317,10 +356,13 @@ class EngineConfig:
             raise ValueError(f"fusion_min_support 至少为 1，当前 {self.fusion_min_support}")
         if self.fusion_trusted_weight < 0:
             raise ValueError(f"fusion_trusted_weight 不能为负，当前 {self.fusion_trusted_weight}")
-        if self.fusion_auto_clear_first not in FUSION_MEMBER_CHOICES:
+        if (
+            self.fusion_auto_clear_first != "auto"
+            and self.fusion_auto_clear_first not in FUSION_MEMBER_CHOICES
+        ):
             raise ValueError(
                 f"未知 fusion_auto_clear_first: {self.fusion_auto_clear_first!r}"
-                f"（可选: {', '.join(FUSION_MEMBER_CHOICES)}）"
+                f"（可选: auto, {', '.join(FUSION_MEMBER_CHOICES)}）"
             )
 
 

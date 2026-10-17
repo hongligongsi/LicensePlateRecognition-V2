@@ -225,11 +225,14 @@ class TestGuiEngineCombo:
             win.close()
 
     def test_fallback_never_lands_on_a_disabled_item(self, qt_app, monkeypatch, config_path):
-        """回落目标必须是**可用**项 —— 第 0 项自己也可能不可用。
+        """回落目标必须是**可用**项 —— 被置灰的项不能成为当前项。
 
         回归：``default_idx`` 原先是硬编码的 0，而 ``setCurrentIndex`` 并不理会
         单项的 enabled 状态，于是"回落"会把一个置灰的引擎选成当前项：界面看着
         选好了，实际跑不了。
+
+        注意别再把"第 0 项"当成"那个不可用的项"：v2.8.1 起 ``auto`` 固定排第一
+        且只要有任一真引擎可用它就可用。判据改成"被置灰的那一项不能是当前项"。
         """
         from lpr.ui.window import MainWindow
 
@@ -239,13 +242,13 @@ class TestGuiEngineCombo:
         win = MainWindow(cfg)
         try:
             combo = win.engine_combo
-            assert combo.count() > 0
             model = combo.model()
-            assert model.item(0).isEnabled() is False  # 第 0 项确实被置灰了
+            dead_index = combo.findData("cv")
+            assert dead_index >= 0
+            assert model.item(dead_index).isEnabled() is False  # 它确实被置灰了
             chosen = combo.currentData()
             assert chosen != "cv"
-            index = combo.findData(chosen)
-            assert model.item(index).isEnabled() is True
+            assert model.item(combo.findData(chosen)).isEnabled() is True
             # 状态栏与它一致（这条曾经不一致过：显示 cascade、实跑 cv）
             assert win._status_engine.text().endswith(
                 next(r["display_name"] for r in describe_engine_choices() if r["name"] == chosen)

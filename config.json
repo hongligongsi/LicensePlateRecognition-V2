@@ -1,6 +1,6 @@
 {
   "engine": {
-    "default": "cascade",
+    "default": "auto",
     "mode": "single",
     "locate": {
       "max_side": 1200,

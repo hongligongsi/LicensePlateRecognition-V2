@@ -166,7 +166,8 @@ def test_config_payload_is_json_safe():
 
 
 def test_config_from_payload_tolerates_empty():
-    assert Config.from_payload({}).engine.default == "cascade"
+    # 默认是策略名 "auto"（按实测强度挑最强可用引擎），不是具体引擎名
+    assert Config.from_payload({}).engine.default == "auto"
 
 
 def test_plate_result_from_dict_roundtrip():

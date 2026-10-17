@@ -12,7 +12,7 @@ import threading
 from dataclasses import asdict
 from typing import Any
 
-from ..config import CASCADE_RESOLVE_ORDER, EngineConfig
+from ..config import BEST_ENGINE_ORDER, CASCADE_RESOLVE_ORDER, EngineConfig
 from .base import BaseEngine
 
 #: 推理串行锁。
@@ -70,17 +70,27 @@ def describe_engines() -> list[dict[str, Any]]:
 #:
 #: 为什么不给它注册一个同名引擎类：
 #:
-#: * ``cascade`` 不是一类实现，而是"用哪个引擎"的规则 —— ``get_engine("cascade")``
+#: * 它们不是一类实现，而是"用哪个引擎"的规则 —— ``get_engine("cascade")``
 #:   本来就无处可查，解析发生在 ``Recognizer._resolve_engine``；
 #: * ``FusionEngine`` 的成员过滤（``NON_MEMBER_NAMES`` 里含 ``cascade`` / ``auto``）
-#:   正依赖"``cascade`` 不是引擎名"这个事实，真注册一个同名引擎会让别名被当成
+#:   正依赖"它们不是引擎名"这个事实，真注册一个同名引擎会让别名被当成
 #:   融合成员。
 #:
-#: 但它对使用者是**合法取值**（``config.ENGINE_CHOICES`` 里就有），所以界面下拉框
-#: 必须能选中它。此前下拉框只列 ``describe_engines()``（纯真引擎），配置里的
+#: 但它们对使用者是**合法取值**（``config.ENGINE_CHOICES`` 里就有），所以界面下拉框
+#: 必须能选中它们。此前下拉框只列 ``describe_engines()``（纯真引擎），配置里的
 #: ``cascade`` 找不到对应项，被当成"不可用"静默降级成第一项 ``cv`` ——
 #: 实测代价：11 张人工真值样张的命中从 10/11 掉到 0/11。
 ALIAS_ENGINES: dict[str, dict[str, Any]] = {
+    "auto": {
+        "display_name": "自动（最强可用）",
+        "description": "按实测强度自动挑：yolo → deep → cv（有权重用 yolo，否则 deep）",
+        # 引用 config 的同一常量：界面说"会跑谁"与运行时真跑谁，必须同源
+        "resolve_order": BEST_ENGINE_ORDER,
+        # 别名在下拉框里的位置。``auto`` 取 ``None`` = **置顶**：它是"挑谁"的
+        # 策略、不属于某个具体引擎，而它又是默认项 —— 默认项排在列表最后
+        # 会让人以为它是个冷门选项。
+        "anchor": None,
+    },
     "cascade": {
         "display_name": "级联引擎",
         "description": "CV 快速定位 → 深度精确识别（等同 deep 引擎）",
@@ -96,10 +106,16 @@ ALIAS_ENGINES: dict[str, dict[str, Any]] = {
 def describe_engine_choices() -> list[dict[str, Any]]:
     """引擎清单**含策略别名**，供界面下拉框与 CLI 引擎表渲染。
 
-    与 :func:`describe_engines` 的唯一区别：把 ``cascade`` 这类别名也列出来，
-    并排在它实际使用的引擎之后。别名的可用性取自它解析出的引擎 ——
-    ``cascade`` 在 ``deep`` 不可用时会退化成纯 ``cv``，此时仍算可用，
-    但 ``description`` 会写明退化，免得界面提示与实际跑的引擎不一致。
+    与 :func:`describe_engines` 的唯一区别：把 ``auto`` / ``cascade`` 这类别名
+    也列出来。位置由 ``ALIAS_ENGINES[*]["anchor"]`` 决定：
+
+    * ``cascade`` 排在 ``deep`` 之后（它就是 deep 的别名）；
+    * ``auto`` 排在**最前**（``anchor=None``）—— 它是"挑谁"的策略、不属于某个
+      具体引擎，而且是默认项，排在末尾会让人以为它是个冷门选项。
+
+    别名的可用性取自它解析出的引擎 —— ``cascade`` 在 ``deep`` 不可用时会退化成
+    纯 ``cv``，此时仍算可用，但 ``description`` 会写明退化，免得界面提示与实际
+    跑的引擎不一致。
 
     真引擎那一段与 :func:`describe_engines` 完全同源，不做任何改写。
     """
@@ -134,8 +150,12 @@ def describe_engine_choices() -> list[dict[str, Any]]:
                 "strategy": True,
             }
         anchor_name = meta.get("anchor", picked)
-        anchor = by_name.get(anchor_name)
-        index = rows.index(anchor) + 1 if anchor is not None else len(rows)
+        if anchor_name is None:
+            # 没有锚点 = 置顶（``auto`` 这种"挑谁"的策略不属于任何具体引擎）
+            index = 0
+        else:
+            anchor = by_name.get(anchor_name)
+            index = rows.index(anchor) + 1 if anchor is not None else len(rows)
         rows.insert(index, entry)
     return rows
 

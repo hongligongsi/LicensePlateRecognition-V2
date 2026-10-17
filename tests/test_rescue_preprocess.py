@@ -184,6 +184,29 @@ class TestRescueWiring:
         results = self._call(eng, 1)
         assert results[0].meta["rescue_preprocess"] is False
 
+    def test_config_switch_skips_rescue_entirely(self, engine_stub, monkeypatch) -> None:
+        """``engine.rescue_preprocess=False`` → 补救路径一次都不跑。
+
+        实测：``deep`` 上它的识别收益是 **0 张**，却要多花约 30% 时间
+        （716 → 991 ms/张）。吞吐敏感的场景要能关掉。
+        """
+        eng = engine_stub
+        eng.config = EngineConfig(rescue_preprocess=False)
+        monkeypatch.setattr(eng, "_recognize_only_detailed", lambda img: [])
+        calls: list[str] = []
+        monkeypatch.setattr(
+            deep_mod,
+            "_rescue_preprocess",
+            lambda roi, variant: calls.append(variant) or self._roi_triple(),
+        )
+
+        assert self._call(eng, 3) == []
+        assert not calls, "关掉开关后连一次预处理都不该做"
+
+    def test_switch_defaults_to_on(self) -> None:
+        """默认必须保持 v2.7.2 起的行为，不能因为加开关就悄悄改默认。"""
+        assert EngineConfig().rescue_preprocess is True
+
     def _roi_triple(self) -> np.ndarray:
         """补救变体返回的图（3 倍尺寸，宽度 ≥600 用来区分主计划）。"""
         return np.full((180, 660, 3), 255, np.uint8)

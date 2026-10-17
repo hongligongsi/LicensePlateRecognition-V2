@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from .batch import parallel_is_worthwhile, run_parallel
-from .config import CASCADE_RESOLVE_ORDER, Config
+from .config import BEST_ENGINE_ORDER, CASCADE_RESOLVE_ORDER, Config
 from .engines import INFERENCE_LOCK, describe_engines, get_engine
 from .engines.base import BaseEngine, EngineUnavailable
 from .plate_rules import describe as describe_plate
@@ -297,10 +297,18 @@ class Recognizer:
         （``cv`` / ``deep`` / ``yolo`` / ``fusion``）是**具体引擎**，原样返回 ——
         可用性由调用方在 ``get_engine`` 时判断，这里不替它做决定：
         用户明确点名 ``yolo`` 却拿到 ``deep`` 的结果，比直接报错更难排查。
+
+        两个策略的偏好序**不同**，刻意不合并：
+
+        * ``auto`` 按**实测强度**挑（``BEST_ENGINE_ORDER = yolo → deep → cv``）。
+          v2.8.1 起这也是 ``config.engine.default`` 的默认值 —— 此前它排的是
+          ``deep → cv``，等于"有权重也不用"，让用户白丢 10 个百分点
+          （CCPD 严格命中 79% vs 89%）。
+        * ``cascade`` 语义是"deep 的别名"，永远先在 deep 里找，找不到才退 cv。
         """
         infos = Recognizer._available_map()
         if requested == "auto":
-            for name in CASCADE_RESOLVE_ORDER:  # ("deep", "cv")，同 cascade 的偏好
+            for name in BEST_ENGINE_ORDER:
                 if infos.get(name, {}).get("available"):
                     return name
             raise EngineUnavailable(

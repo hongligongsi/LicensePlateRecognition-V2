@@ -39,6 +39,7 @@ from .engines import describe_engine_choices
 from .plate_rules import correct, is_valid
 from .plate_rules import describe as describe_plate
 from .types import parse_color
+from .utils.environment import log_environment
 from .utils.logging_setup import LEVEL_CHOICES, setup_logging
 from .utils.security import SecurityError, mask_plate, model_info
 
@@ -98,10 +99,10 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--engine",
         default=None,
-        choices=["auto", *ENGINE_CHOICES],
+        choices=list(ENGINE_CHOICES),
         help=(
-            "识别引擎：auto(自动) / cv(传统) / deep(深度学习) / cascade(级联，最省时)"
-            " / yolo(检测识别，需自备 ONNX 权重)"
+            "识别引擎：auto(自动挑最强可用，默认) / cv(传统) / deep(深度学习)"
+            " / cascade(级联，最省时) / yolo(检测识别，需自备 ONNX 权重)"
         ),
     )
     p.add_argument("--recursive", action="store_true", help="目录时递归查找子目录")
@@ -137,7 +138,7 @@ def _make_parser() -> argparse.ArgumentParser:
     # ---------------------------------------------------------- video
     p = sub.add_parser("video", help="识别视频文件或摄像头", parents=[log_opts])
     p.add_argument("input", help="视频路径，或摄像头编号（如 0）")
-    p.add_argument("--engine", default=None, choices=["auto", *ENGINE_CHOICES])
+    p.add_argument("--engine", default=None, choices=list(ENGINE_CHOICES))
     p.add_argument("--stride", type=int, default=10, help="每 N 帧识别一次（默认 10）")
     p.add_argument("--output", default=None, help="输出标注视频路径")
     p.add_argument("--mask", action="store_true", help="输出中打码")
@@ -476,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
     # 日志在这里**统一**初始化。此前只有 predict / video 两条路径调过它，
     # 于是 gui 的「运行日志」面板永远是空的、其他子命令的日志也没人接收。
     setup_logging(**cfg.logging_kwargs())
+    # 一行环境指纹：让"代码变了 / 配置变了 / 环境变了"在日志里可区分
+    log_environment(cfg)
     handlers = {
         "predict": cmd_predict,
         "video": cmd_video,

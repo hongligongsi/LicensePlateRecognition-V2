@@ -1422,8 +1422,13 @@ class DeepEngine(BaseEngine):
             # ---- 补救预处理：主计划全部落空时，换一组"增强"重试。
             # 与下面的第二模型交叉验证是两条**独立**的补救路径 ——
             # 这里换图像，那里换模型；两者可叠加（先换图像，仍无产出再换模型）。
+            #
+            # ``config.engine.rescue_preprocess=False`` 可整条关掉：实测 ``deep``
+            # 上它的识别收益是 0 张却要多花约 30% 时间（`yolo` 上是 +1 张，
+            # 两者共用这条管线，所以开关是引擎级的）。关掉后 `rescue_used`
+            # 恒为 False，meta 里照旧有这一项，语义仍是"这次真跑了补救吗"。
             rescue_used = False
-            if not votes and rescue_budget > 0:
+            if not votes and rescue_budget > 0 and self.config.rescue_preprocess:
                 rescue_budget -= 1
                 # 注意变量名：外层主计划的 `variant` 是**车牌图像变体**（单层图或
                 # 双层拆分后的行），这里不能复用，否则 mypy 会看到同一名字先后
