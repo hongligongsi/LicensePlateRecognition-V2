@@ -8,6 +8,12 @@
 # 同时必须是 UTF-8（配合 start.bat 里的 chcp 65001）。
 tools/no-python.txt text eol=crlf
 
+# shell 脚本反过来**必须是 LF**：CRLF 会让 shebang 变成 `#!/bin/sh\r`，
+# 在 Linux/macOS 上直接 `bad interpreter: No such file or directory`。
+# core.autocrlf=true 的仓库（本仓库就是）默认会把 .sh 也转成 CRLF，
+# 所以这一条不是风格偏好，是"能不能跑"的问题。
+*.sh text eol=lf
+
 # 模型文件是 OpenCV YAML 文本，会被 git 误判为文本做 CRLF/LF 归一化，
 # 导致 Windows 与 Linux 检出内容不同、sha256 校验失败（"文件可能已被篡改"）。
 *.dat binary
