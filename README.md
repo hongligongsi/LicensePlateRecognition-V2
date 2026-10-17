@@ -1,4 +1,4 @@
-# 车牌识别系统 v2.8.2（License-Plate-Recognition 升级版）
+# 车牌识别系统 v2.8.3（License-Plate-Recognition 升级版）
 
 用 Python + OpenCV + 深度学习做的**中国车牌识别**，支持蓝牌 / 黄牌 / 绿牌（新能源）/ 白牌 / 黑牌 / 危险品运输牌。
 
@@ -1049,6 +1049,8 @@ for plate in tracker.update(engine.predict(frame)):
 | `hazmat_fg_ratio` | `0.03` | 危险品判定：黄色前景像素占比下限 |
 | `hazmat_fg_share` | `0.06` | 危险品判定：黄/(黄+黑) 比值下限 |
 | `hazmat_white_ratio` | `0.7` | 白色像素达黄色的该倍数时判定为白字（排除黑底白字牌） |
+| `hazmat_max_green` | `0.12` | 绿色像素占比上限（v2.8.3）：黄绿渐变出租车牌会满足前述全部 hazmat 判据，靠它排除 |
+| `hazmat_green_yellow_ratio` | `1.0` | 绿色达黄色的该倍数即排除（与上一条双护栏） |
 | `box_padding` | `5` | 候选矩形外扩像素，防止车牌边缘被裁掉 |
 | `min_chars` | `6` | 字符分割后要求的最少字符数 |
 | `max_candidates` | `5` | 最多保留多少个候选车牌进入字符识别 |
@@ -1062,6 +1064,9 @@ for plate in tracker.update(engine.predict(frame)):
   达不到 0.8 就被当边界裁掉 —— **整字丢失**（实测 `皖AN9491`→`皖AN949`）。
 - **`hazmat_white_ratio` 是为了排除黑底白字牌**。真危险品牌上黄字是绝对前景、白色像素≈0；
   实测误判的黑底白字牌 white/yellow ≈ 1.0~3.2，取 0.7 隔开。
+- **`hazmat_max_green` / `hazmat_green_yellow_ratio` 是为了排除黄绿渐变出租车牌**（v2.8.3）。
+  渐变牌（如 浙B·08520D）渐变绿深处 V 值低被数进"黑底"、黄头又贡献黄色，前三条判据
+  全中；真危险品牌绿色≈0，双护栏任一越线即排除。
 
 ### 8.4 `engine.*` —— 识别与融合
 

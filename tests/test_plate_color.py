@@ -134,6 +134,39 @@ def test_detect_hazmat_false_for_yellow_on_black() -> None:
     assert detect_hazmat(_plate((0, 220, 255), (10, 10, 10)), LocateConfig()) is False
 
 
+def _gradient_taxi_plate() -> np.ndarray:
+    """合成黄绿渐变出租车牌：黄头（省份简称区）+ 绿身（号码区）。
+
+    实拍样本 ``img/ef55d67fd01616bafe1d540500b512a2.jpg``（浙B·08520D）的
+    整框实测：yellow≈0.17、dark≈0.49、green≈0.43 —— 前三条危险品判据
+    （黑底够多 + 黄色前景存在 + 白色很少）全部满足，v2.8.2 及以前
+    误判成危险品。合成牌比例相近（yellow≈0.20 / dark≈0.80 / green≈0.66）。
+    """
+    img = np.full((50, 127, 3), (25, 60, 25), np.uint8)  # 深绿身（暗、偏绿）
+    img[:, :26] = (30, 200, 230)  # 黄头（渐变牌的省份简称区）
+    cv2.putText(img, "08520D", (32, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (10, 10, 10), 2)
+    return img
+
+
+def test_gradient_taxi_plate_is_not_hazmat() -> None:
+    """黄绿渐变出租车牌不是危险品：绿色护栏必须拦住它。"""
+    roi = _gradient_taxi_plate()
+    assert detect_hazmat(roi, LocateConfig()) is False
+
+
+def test_gradient_taxi_plate_detects_green() -> None:
+    """渐变牌应判绿（绿身占大头），而非危险品或黄牌。"""
+    got, _ = detect_color(_gradient_taxi_plate(), LocateConfig())
+    assert got is PlateColor.GREEN
+
+
+def test_hazmat_green_guard_configurable() -> None:
+    """护栏可通过配置关闭（调大上限 / 调大倍数 → 恢复旧的误判行为）。"""
+    roi = _gradient_taxi_plate()
+    cfg = LocateConfig(hazmat_max_green=0.99, hazmat_green_yellow_ratio=99.0)
+    assert detect_hazmat(roi, cfg) is True
+
+
 def test_detect_hazmat_false_for_plain_black() -> None:
     """纯黑无文字不应判为危险品（缺少黄色前景）。"""
     assert detect_hazmat(_plate((10, 10, 10), (10, 10, 10), text=""), LocateConfig()) is False

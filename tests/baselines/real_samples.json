@@ -137,7 +137,7 @@
         720,
         1160
       ],
-      "n_candidates": 3,
+      "n_candidates": 4,
       "top_bbox": [
         256,
         453,
@@ -537,7 +537,7 @@
         720,
         1160
       ],
-      "n_candidates": 5,
+      "n_candidates": 6,
       "top_bbox": [
         35,
         305,
@@ -905,7 +905,7 @@
         720,
         1160
       ],
-      "n_candidates": 3,
+      "n_candidates": 4,
       "top_bbox": [
         282,
         454,
@@ -948,7 +948,7 @@
         720,
         1160
       ],
-      "n_candidates": 4,
+      "n_candidates": 5,
       "top_bbox": [
         238,
         458,
@@ -1780,7 +1780,7 @@
         1080,
         1438
       ],
-      "n_candidates": 7,
+      "n_candidates": 8,
       "top_bbox": [
         264,
         0,
@@ -1910,12 +1910,12 @@
       ],
       "n_candidates": 11,
       "top_bbox": [
-        249,
+        259,
         0,
-        1441,
-        385
+        1170,
+        346
       ],
-      "top_color": "hazmat"
+      "top_color": "green"
     },
     {
       "path": "img/651eca07a782c4bad718ad0c00f2b0fc.jpeg",
@@ -2148,7 +2148,7 @@
         800,
         1732
       ],
-      "n_candidates": 7,
+      "n_candidates": 8,
       "top_bbox": [
         16,
         175,
@@ -3380,7 +3380,7 @@
         720,
         1160
       ],
-      "n_candidates": 6,
+      "n_candidates": 7,
       "top_bbox": [
         353,
         713,
@@ -3860,7 +3860,7 @@
         720,
         1160
       ],
-      "n_candidates": 3,
+      "n_candidates": 4,
       "top_bbox": [
         269,
         498,
@@ -4308,7 +4308,7 @@
         720,
         1160
       ],
-      "n_candidates": 9,
+      "n_candidates": 10,
       "top_bbox": [
         329,
         470,
@@ -4772,7 +4772,7 @@
         720,
         1160
       ],
-      "n_candidates": 6,
+      "n_candidates": 7,
       "top_bbox": [
         342,
         634,

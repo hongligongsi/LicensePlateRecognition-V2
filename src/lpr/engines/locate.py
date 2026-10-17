@@ -131,11 +131,15 @@ def detect_hazmat(roi: np.ndarray, cfg: LocateConfig) -> bool:
     1. 主体为黑底（低亮度像素占多数）—— 排除黄底黑字的普通黄牌
     2. 存在足够比例的黄色前景（文字）—— 排除普通黑牌（黑底白字）
     3. 白色像素显著少于黄色 —— 进一步排除黑底白字牌
+    4. 绿色像素不过线 —— 排除黄绿渐变出租车牌（v2.8.3 补）
 
-    第 3 条是实测后补的：港澳/使领馆等黑底白字牌上，车灯反光、红字渗色
-    等会产生零星黄色噪声（占比 4%~8%），足以越过第 2 条的下限，
-    但同一块牌上白色文字面积与黄色噪声相当甚至更大（white/yellow≈1~3）；
-    真危险品牌上黄字是绝对前景，白色像素≈0，两者可稳定区分。
+    第 4 条是实测后补的：黄绿渐变出租车牌（黄头绿身，如 ``浙B·08520D``）
+    整框偏暗（渐变绿深处 V 值低），黄头又贡献了足量黄色像素，前三条
+    全部满足、误判成危险品。真危险品牌是黑底黄字，绿色应≈0；渐变牌
+    的绿色与黄色同源（同一段车身），绿/黄 ≈ 2~2.5。故用双护栏：
+    绿色占比超过绝对上限（:attr:`hazmat_max_green`）或达到黄色的
+    :attr:`hazmat_green_yellow_ratio` 倍，即判定"黄色不是文字、
+    是渐变牌的黄头"，排除出危险品。
     """
     bgr = ensure_bgr(roi, min_side=4)
     if not cfg.detect_hazmat or bgr is None or bgr.size == 0:
@@ -155,6 +159,11 @@ def detect_hazmat(roi: np.ndarray, cfg: LocateConfig) -> bool:
     dark = cv2.countNonZero(_color_mask(hsv, PlateColor.BLACK)) / total
 
     if dark < cfg.hazmat_bg_ratio or yellow < cfg.hazmat_fg_ratio:
+        return False
+    # 绿色护栏：黄绿渐变出租车牌的黄头会喂给本函数足量黄色，但真危险品牌
+    # 上绿色应≈0；渐变牌绿色占比大且与黄色同量级。双护栏任一越线即排除。
+    green = cv2.countNonZero(_color_mask(hsv, PlateColor.GREEN)) / total
+    if green >= cfg.hazmat_max_green or green >= yellow * cfg.hazmat_green_yellow_ratio:
         return False
     # 白字排除：白色像素达到黄色的一定倍数 → 前景文字是白色而非黄色
     white = cv2.countNonZero(_color_mask(hsv, PlateColor.WHITE)) / total

@@ -3208,3 +3208,58 @@ return any(b[:i] + b[i + 1 :] == a for i in range(len(b)))   # 只检查"删一�
   定的，所以它做成配置项而不是常量 —— 换个分布可能需要重调；
 * **没碰 `fusion_trusted_weight` 的判据**：它仍然是"票权 ≥ 1.0"（真实数据上近乎
   死路）。改它会改变已有配置的语义，而它现在有明确的替代品（`fusion_solo_*`）。
+
+# v2.8.3 —— 危险品牌误判：黄绿渐变出租车牌被判成 hazmat
+
+## 一、起点：门槛扩容暴露的一张图
+
+2026-10-17 把 `img/` 里 32 张无标注实拍照片标注入 CI 门槛时（11 → 43 张），
+`img/ef55d67fd01616bafe1d540500b512a2.jpg`（浙B·08520D，黄绿渐变出租车牌）
+号码命中但底色判成 **hazmat**（真值 green），被零容忍的颜色门槛拦下，只能先入
+`known_failure`。
+
+## 二、诊断
+
+对检出框逐色统计（整框 / 中心区）：
+
+| 区域 | yellow | dark | green | white |
+|---|---|---|---|---|
+| 整框 | 0.171 | 0.486 | **0.427** | 0.000 |
+| 中心区 | 0.154 | 0.342 | **0.614** | 0.000 |
+
+`detect_hazmat` 的前三条判据全部满足：黑底够多（0.486 ≥ 0.45）、黄色前景存在
+（0.171 ≥ 0.03）、白色很少（0 < yellow×0.7）、黄/黑占比过线 —— 于是误判。
+根因：**黄绿渐变出租车牌（黄头绿身）的渐变绿深处 V 值低**，被数进"黑底"；
+黄头又贡献了足量黄色。而真危险品牌（黑底黄字）上绿色应≈0。
+
+## 三、修了什么
+
+```python
+# config.py —— 两个新护栏（均可配置）
+hazmat_max_green: float = 0.12          # 绿色占比绝对上限
+hazmat_green_yellow_ratio: float = 1.0  # 绿色达到黄色的该倍数即排除
+
+# locate.py detect_hazmat —— 白字排除之前插入
+green = cv2.countNonZero(_color_mask(hsv, PlateColor.GREEN)) / total
+if green >= cfg.hazmat_max_green or green >= yellow * cfg.hazmat_green_yellow_ratio:
+    return False
+```
+
+双护栏任一越线即排除：渐变牌绿/黄 ≈ 2~2.5 且绝对占比 0.34+；真危险品牌两值≈0。
+
+## 四、验证
+
+| 项 | 结果 |
+|---|---|
+| 浙B·08520D | hazmat → **green** ✅ |
+| 其余绿牌（京BD01113、吉AF11666） | 无变化 ✅ |
+| 黑底黄字合成牌（真危险品） | 仍判 hazmat ✅ |
+| `test_plate_color` 等 3 个测试文件 | 158 passed（+3 条渐变牌回归） |
+| 43 张真实样张门槛 | ef55 从 known_failure **转正常**（常规 32 → 33） |
+| `ruff` / `format` / `mypy` | 全绿 |
+
+## 五、仍然没做
+
+* 客车车身喷绘大字干扰颜色判据（`dbb4` 鲁L06991D）是另一类问题——
+  干扰源在车牌框外的车身上，需要"ROI 中心区权重更高"级别的改动；
+* 其余 8 张 known_failure（形近字 5、漏检 2、错读 1）见各自 `_note`。

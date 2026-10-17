@@ -296,8 +296,7 @@
         "浙B08520D"
       ],
       "color": "green",
-      "known_failure": true,
-      "_note": "号码命中但底色判成 hazmat——渐变绿 taxi 牌颜色判据失手"
+      "_note": "v2.8.2 曾误判危险品（hazmat）；v2.8.3 绿色护栏修复后转正（渐变绿 taxi 牌）"
     },
     {
       "path": "img/ff516acb97be7f0b575ce8347bb382ad.jpeg",
