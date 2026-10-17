@@ -43,7 +43,7 @@ from .utils.security import (
 
 #: 版本号唯一来源。``cli.VERSION``、界面标题、状态栏都从这里取，
 #: 不再各自维护字面量（v2.3.9 之前这里停在 2.3.1，与 pyproject 各说各话）。
-__version__ = "2.8.1"
+__version__ = "2.8.2"
 
 __all__ = [
     "COLOR_NAMES",

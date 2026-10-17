@@ -297,10 +297,33 @@ class EngineConfig:
     #: 9 条候选（7 条误检），而 ``yolo`` 给 2 条全中、``deep`` 给 1 条全中。
     #: 只做并集会让最弱成员的误检全部污染输出。取 1 则退化为并集（最大召回）。
     fusion_min_support: int = 2
-    #: 单成员独存所需的票权阈值：胜出号码的票权达到它就保留，不看票数。
-    #: 默认 1.0 = ``yolo`` / ``deep`` 这类权重 1.0 的成员可以独存；
-    #: ``cv``（默认票权 0.6）的孤立结果则需要第二个成员背书。
+    #: 单成员独存所需的**票权**阈值：胜出号码的票权达到它就保留，不看票数。
+    #:
+    #: ⚠️ 注意票权 = ``成员权重 × 置信度``（见 ``fusion_engine.vote_group``），
+    #: 所以默认 1.0 只有在**置信度恰好 1.0** 时才成立 —— 真实 OCR 读数几乎
+    #: 到不了 1.0，这条路实际上长期不生效。真正承担"放行单成员"职责的是下面
+    #: 的 ``fusion_solo_sources`` + ``fusion_solo_confidence``。
+    #: 想让票权门槛真的起作用，把它调到 0.7~0.9（与置信度量纲对齐）。
     fusion_trusted_weight: float = 1.0
+    #: **独票旁路**：允许「只有一个成员投它」的结果免于 ``fusion_min_support``
+    #: 的成员名单，以及该成员需要的**原始置信度**下限。
+    #:
+    #: 为什么需要这条旁路：``ensemble`` 原来只认"至少两票"，而倾斜/远景图上
+    #: 常常只有一个引擎读得出来 —— 实测 100 张 CCPD 里有 17 张因此**零产出**，
+    #: 其中 6 张恰好是 ``yolo`` 单独读对的（tilt×5 + fn×1）。
+    #:
+    #: 为什么只放 ``yolo`` 而不是所有成员（实测，见 ``docs/ACCURACY.md`` §6.2）：
+    #: 同一批图上把 ``deep`` 也放进来，同样救回 6 张，但**多 2 条误检**；
+    #: 把 ``cv`` 放进来则多 470 条 —— ``cv`` 的置信度是字符平均分，在糊图上
+    #: 恒为 1.0，完全没有校准能力。``yolo`` 的框来自检测网络、读数是同一条
+    #: 网络给的，才配得上"单票即可信"。
+    #:
+    #: 设为空元组 ``()`` 即退回 v2.8.1 的行为（只认两票）。
+    fusion_solo_sources: tuple[str, ...] = ("yolo",)
+    #: 独票旁路要求的置信度下限。默认 0.75 与 ``fusion_chain_accept`` 对齐：
+    #: 都是"这一票够不够可信"的问题，用同一个量纲省得解释两套数字。
+    #: 实测 0.70 与 0.75 在 100 张 CCPD 上救回的图数相同（6 张），取更保守的。
+    fusion_solo_confidence: float = 0.75
 
     def validate(self) -> None:
         #: ``yolo`` / ``fusion`` 都在列 —— 它们是**真引擎**，不是 cascade 那样的别名。
@@ -356,6 +379,18 @@ class EngineConfig:
             raise ValueError(f"fusion_min_support 至少为 1，当前 {self.fusion_min_support}")
         if self.fusion_trusted_weight < 0:
             raise ValueError(f"fusion_trusted_weight 不能为负，当前 {self.fusion_trusted_weight}")
+        # ``or ()`` 是廉价防御：手改 config.json 时 ``"fusion_solo_sources": null``
+        # 会被反序列化成 None，这里当"关闭旁路"处理，而不是抛 TypeError。
+        for name in self.fusion_solo_sources or ():
+            if name not in FUSION_MEMBER_CHOICES:
+                raise ValueError(
+                    f"未知 fusion_solo_sources 成员: {name!r}"
+                    f"（可选: {', '.join(FUSION_MEMBER_CHOICES)}；留空表示关闭独票旁路）"
+                )
+        if not 0.0 < self.fusion_solo_confidence <= 1.0:
+            raise ValueError(
+                f"fusion_solo_confidence 必须在 (0, 1]，当前 {self.fusion_solo_confidence}"
+            )
         if (
             self.fusion_auto_clear_first != "auto"
             and self.fusion_auto_clear_first not in FUSION_MEMBER_CHOICES

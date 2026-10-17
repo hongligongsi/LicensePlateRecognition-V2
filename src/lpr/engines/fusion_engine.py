@@ -7,12 +7,19 @@
   三个引擎的错误模式互补（cv 擅长清晰正视角、deep 擅长中文与模糊、
   yolo 擅长侧倾透视），所以融合后的准确率与召回都高于任一单引擎。
   代价是耗时≈三者相加。
+
+  投票之后还有一道**准入**：胜出号码要"凑够票"才留下，否则整组被丢弃
+  （丢什么会记进 ``last_dropped`` 并打日志，不静默）。规则见
+  :func:`fuse_results` 与 :func:`_passes_admission` —— 大致是"两票一致，
+  或独票来自检测网络且置信度够"。独票旁路是 v2.8.2 加的：没有它时倾斜/
+  远景图上"只有一个引擎读得出"的图会零产出（实测 100 张 CCPD 里 17 张）。
 * ``chain`` **顺序兜底链** —— 按成员顺序依次尝试，一旦拿到"够可信"的结果
   就停（``fusion_chain_accept``）。耗时≈最快命中的那个引擎，只提召回不提
   单次准确率。
 * ``auto`` **特征选优** —— 先按图像特征（长边分辨率、模糊度）给成员排序，
-  再按序尝试、命中即止。清晰大图走 deep（快且准），小图/糊图走 yolo
-  （检测网络更稳），不可用就顺延。
+  再按序尝试、命中即止。清晰大图优先 ``fusion_auto_clear_first``（默认
+  ``"auto"`` = 在岗成员里按实测强度取最强，有权重就是 yolo），小图/糊图
+  固定让检测网络先上（轮廓法与 OCR 在低分辨率上更容易失效），不可用就顺延。
 
 三个共同点：
 
@@ -68,6 +75,17 @@ DEFAULT_GROUP_IOU = 0.4
 #: 想取并集求最大召回，把 ``fusion_min_support`` 设成 1 即可。
 DEFAULT_MIN_SUPPORT = 2
 DEFAULT_TRUSTED_WEIGHT = 1.0
+
+#: **独票旁路**：允许"只有这一个成员投它"的候选免于 ``min_support`` 的成员。
+#:
+#: 不加这条旁路时，倾斜/远景图上"只有一个引擎读得出来"的图会**零产出** ——
+#: 100 张 CCPD 里 17 张如此，其中 6 张恰好是 yolo 单独读对的。
+#:
+#: 为什么只信检测网络（实测见 ``docs/ACCURACY.md`` §6.2）：同一批图上把 deep
+#: 也放进来，救回的图数一样（6 张）却多 2 条误检；放开 cv 多 470 条。cv 的
+#: confidence 是字符平均分，在糊图上恒为 1.0，没有校准能力，不能当"够可信"用。
+DEFAULT_SOLO_SOURCES: tuple[str, ...] = ("yolo",)
+DEFAULT_SOLO_CONFIDENCE = 0.75
 
 #: ``chain`` 的"够可信"门槛
 DEFAULT_CHAIN_ACCEPT = 0.75
@@ -356,11 +374,15 @@ def fuse_results(
     strategy: str = STRATEGY_ENSEMBLE,
     min_support: int = DEFAULT_MIN_SUPPORT,
     trusted_weight: float = DEFAULT_TRUSTED_WEIGHT,
+    solo_sources: tuple[str, ...] | list[str] = DEFAULT_SOLO_SOURCES,
+    solo_confidence: float = DEFAULT_SOLO_CONFIDENCE,
     dropped: list[dict[str, Any]] | None = None,
 ) -> list[PlateResult]:
     """并联融合的纯函数入口（不依赖引擎实例，便于单测）。
 
     Args:
+        solo_sources: 允许"单成员独票"存活的成员名；传空序列即退回"只认两票"。
+        solo_confidence: 独票存活所需的该成员原始置信度。
         dropped: 传入一个 list 时，被准入规则滤掉的组会写进去（诊断用）。
             丢弃**不能是静默的** —— 否则用户会以为引擎漏检，其实是策略滤掉了。
     """
@@ -375,14 +397,32 @@ def fuse_results(
     for group in group_results(results, iou_threshold):
         candidate = fuse_group(group, weights, order, strategy=strategy)
         info = candidate.meta.get("fusion", {})
-        if not _passes_admission(info, weights, effective_min_support, trusted_weight):
+        if not _passes_admission(
+            info,
+            weights,
+            effective_min_support,
+            trusted_weight,
+            solo_sources=solo_sources,
+            solo_confidence=solo_confidence,
+        ):
             if dropped is not None:
+                votes = info.get("votes", {})
+                contributors = info.get("contributors", {})
+                winner = max(votes, key=lambda text: votes[text]) if votes else ""
+                backers = [n for n, b in contributors.items() if b.get("text") == winner]
                 dropped.append(
                     {
                         "text": candidate.text,
-                        "votes": info.get("votes", {}),
+                        "votes": votes,
                         "support": info.get("support", 0),
                         "bbox": list(candidate.bbox) if candidate.bbox else None,
+                        # 谁投了它、那一票多可信 —— 排查"为什么被滤"要看这两项
+                        "backers": backers,
+                        "confidence": round(
+                            float(contributors[backers[0]].get("confidence", 0.0)), 4
+                        )
+                        if backers
+                        else 0.0,
                     }
                 )
             continue
@@ -397,11 +437,24 @@ def _passes_admission(
     weights: dict[str, float],
     min_support: int,
     trusted_weight: float,
+    *,
+    solo_sources: tuple[str, ...] | list[str] = (),
+    solo_confidence: float = 1.0,
 ) -> bool:
-    """准入判定：够票数，或来自足够可信的成员。
+    """准入判定：够票数、票权够高，或独票来自受信成员且置信度够。
+
+    三条路按"证据强度"排：
+
+    1. **票权够高**（``winner_weight >= trusted_weight``）—— 与来源无关；
+    2. **够票数**（``support >= min_support``）—— 多个成员独立读数一致；
+    3. **独票旁路**（``solo_sources`` 里的成员单票且置信度 >= ``solo_confidence``）。
 
     没有读数（``text == ""``）的组**一律保留** —— 那是"检到了但没认出来"，
     属于要给人看的信息，不是误检噪声。
+
+    第 3 条是 v2.8.2 新增。它刻意**不**放宽到所有成员：``cv`` 的置信度是字符
+    平均分（糊图上恒 1.0），``deep`` 的独票实测要多付 2 条误检。详见
+    ``docs/ACCURACY.md`` §6.2。
     """
     votes: dict[str, float] = info.get("votes", {})
     if not votes:
@@ -409,7 +462,19 @@ def _passes_admission(
     winner_weight = max(votes.values())
     if winner_weight >= trusted_weight:
         return True
-    return int(info.get("support", 0)) >= min_support
+    support = int(info.get("support", 0))
+    if support >= min_support:
+        return True
+    if not solo_sources or support != 1:
+        return False
+    # 唯一投胜出号码的成员 —— 注意 ``contributors`` 里每个引擎只留一票，
+    # 所以"有人投它"等价于"它拿到了那一票"，不必再排除同引擎的重复读数。
+    winner = max(votes, key=lambda text: votes[text])
+    contributors: dict[str, dict[str, Any]] = info.get("contributors", {})
+    backers = [name for name, blob in contributors.items() if blob.get("text") == winner]
+    if len(backers) != 1 or backers[0] not in solo_sources:
+        return False
+    return float(contributors[backers[0]].get("confidence", 0.0)) >= solo_confidence
 
 
 # ---------------------------------------------------------------------- 引擎
@@ -441,6 +506,8 @@ class FusionEngine(BaseEngine):
         chain_accept: float | None = None,
         min_support: int | None = None,
         trusted_weight: float | None = None,
+        solo_sources: tuple[str, ...] | list[str] | None = None,
+        solo_confidence: float | None = None,
         clear_first: str | None = None,
         member_factory: Callable[[str], Any] | None = None,
     ) -> None:
@@ -455,6 +522,8 @@ class FusionEngine(BaseEngine):
             chain_accept: ``chain`` 的"够可信"门槛。
             min_support: 融合结果要留下所需的最少一致成员数。
             trusted_weight: 单成员独存所需的票权。
+            solo_sources: 允许"单成员独票"存活的成员名；空序列 = 关闭旁路。
+            solo_confidence: 独票存活所需的该成员原始置信度。
             clear_first: ``auto`` 在清晰大图上的首选成员（默认跟随 config
                 的 ``fusion_auto_clear_first``，再退到 ``"deep"``）。
             member_factory: 成员引擎工厂（默认 ``get_engine``）。测试注入用。
@@ -490,6 +559,18 @@ class FusionEngine(BaseEngine):
             trusted_weight
             if trusted_weight is not None
             else _cfg_value(cfg, "fusion_trusted_weight", DEFAULT_TRUSTED_WEIGHT)
+        )
+        # 显式传空 tuple 是合法的（= 关闭旁路），所以这里必须用 is not None 判断，
+        # 不能写成 `solo_sources or 默认值` —— 那会把"我要关掉"当成"没给值"。
+        self.solo_sources: tuple[str, ...] = tuple(
+            solo_sources
+            if solo_sources is not None
+            else _cfg_value(cfg, "fusion_solo_sources", DEFAULT_SOLO_SOURCES) or ()
+        )
+        self.solo_confidence = float(
+            solo_confidence
+            if solo_confidence is not None
+            else _cfg_value(cfg, "fusion_solo_confidence", DEFAULT_SOLO_CONFIDENCE)
         )
         self.clear_first = str(
             clear_first
@@ -619,17 +700,25 @@ class FusionEngine(BaseEngine):
             strategy=self.strategy,
             min_support=self.min_support,
             trusted_weight=self.trusted_weight,
+            solo_sources=self.solo_sources,
+            solo_confidence=self.solo_confidence,
             dropped=dropped,
         )
         self.last_dropped = dropped
         if dropped:
             # 丢弃必须可见：否则用户会以为引擎漏检，其实是准入规则滤掉了
             logger.info(
-                "融合准入滤掉 %d 个孤立候选（未达 %d 票且票权 < %.2f）：%s",
+                "融合准入滤掉 %d 个候选（未达 %d 票/票权 < %.2f/独票来源不在 %s）：%s",
                 len(dropped),
                 self.min_support,
                 self.trusted_weight,
-                ", ".join(str(d.get("text") or "(无读数)") for d in dropped),
+                ",".join(self.solo_sources) or "（已关闭）",
+                ", ".join(
+                    f"{d.get('text') or '(无读数)'}"
+                    f"[{'+'.join(d.get('backers') or []) or '无'}"
+                    f"@{d.get('confidence', 0):.2f}]"
+                    for d in dropped
+                ),
             )
         for res in fused:
             info = res.meta.setdefault("fusion", {})

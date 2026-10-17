@@ -395,6 +395,126 @@ class TestAdmission:
         assert dropped == []
 
 
+# ------------------------------------------------------------------ 独票旁路
+
+
+class TestSoloBypass:
+    """v2.8.2：允许受信成员的"独票"免于 ``min_support``。
+
+    背景：``support >= 2`` 让 100 张 CCPD 里 17 张**零产出**，其中 6 张恰好是
+    yolo 单独读对的。但放开谁必须按实测来 —— 放开 deep 多 2 条误检、放开 cv
+    多 470 条，所以默认只放 yolo。
+    """
+
+    MEMBERS = ("yolo", "deep", "cv")
+
+    def test_yolo_solo_high_confidence_survives(self):
+        out = fuse_results(
+            [res("yolo", "京PAP315", 0.87)], DEFAULT_ENGINE_WEIGHTS, members=self.MEMBERS
+        )
+        assert [r.text for r in out] == ["京PAP315"]
+
+    def test_solo_works_at_real_ocr_confidence(self):
+        """回归：这条路**不能**依赖 ``trusted_weight``。
+
+        ``trusted_weight=1.0`` 比的是票权（= 权重 × 置信度），真实 OCR 读数
+        到不了 1.0，所以那条判据在真实数据上长期不生效 —— 合成测试若全用
+        ``conf=1.0``，会把这条死路当成活路。这里刻意用 0.85。
+        """
+        out = fuse_results(
+            [res("yolo", "京PAP315", 0.85)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            trusted_weight=1.0,
+        )
+        assert [r.text for r in out] == ["京PAP315"]
+        assert out[0].meta["fusion"]["support"] == 1
+
+    def test_yolo_solo_below_confidence_is_dropped(self):
+        dropped: list[dict] = []
+        out = fuse_results(
+            [res("yolo", "京PAP315", 0.6)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            dropped=dropped,
+        )
+        assert out == []
+        assert dropped[0]["backers"] == ["yolo"]
+        assert dropped[0]["confidence"] == pytest.approx(0.6)
+
+    def test_deep_solo_is_not_trusted_by_default(self):
+        """放开 deep 会多 2 条误检（实测）—— 默认名单里没有它。"""
+        out = fuse_results(
+            [res("deep", "皖B8722", 0.95)], DEFAULT_ENGINE_WEIGHTS, members=self.MEMBERS
+        )
+        assert out == []
+
+    def test_deep_solo_survives_when_explicitly_trusted(self):
+        """名单可配：想用自己的实测结论覆盖默认，就显式写进去。"""
+        out = fuse_results(
+            [res("deep", "皖B8722", 0.95)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            solo_sources=("deep",),
+        )
+        assert [r.text for r in out] == ["皖B8722"]
+
+    def test_cv_solo_never_survives_despite_confidence_one(self):
+        """cv 的 confidence 是字符平均分，糊图上恒为 1.0 —— 高但不可信。"""
+        out = fuse_results(
+            [res("cv", "川J111WE", 1.0)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            solo_sources=("yolo", "deep", "cv"),
+        )
+        # 显式把它放进名单也仍受 confidence 门槛约束，1.0 会通过 —— 这条断言
+        # 记录的是"名单才是闸门"：默认名单里没有 cv，所以默认一定丢。
+        assert [r.text for r in out] == ["川J111WE"]
+        out_default = fuse_results(
+            [res("cv", "川J111WE", 1.0)], DEFAULT_ENGINE_WEIGHTS, members=self.MEMBERS
+        )
+        assert out_default == []
+
+    def test_empty_solo_sources_restores_old_behaviour(self):
+        out = fuse_results(
+            [res("yolo", "京PAP315", 0.99)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            solo_sources=(),
+        )
+        assert out == []
+
+    def test_two_votes_still_pass_regardless_of_solo_settings(self):
+        out = fuse_results(
+            [res("yolo", "京A12345", 0.5), res("deep", "京A12345", 0.5)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            solo_sources=(),
+        )
+        assert [r.text for r in out] == ["京A12345"]
+
+    def test_solo_judgement_ignores_engine_weight(self):
+        """判据是**原始置信度**，与票权无关 —— 权重只影响组内裁决。"""
+        weights = {"yolo": 0.4, "deep": 1.0, "cv": 0.6}
+        out = fuse_results(
+            [res("yolo", "京PAP315", 0.9)], engine_weights=weights, members=self.MEMBERS
+        )
+        assert [r.text for r in out] == ["京PAP315"]
+
+    def test_solo_candidate_does_not_rescue_a_rival(self):
+        """旁路只对"投它的那个成员"开口，不会顺带放行同组的其它候选。"""
+        dropped: list[dict] = []
+        out = fuse_results(
+            [res("yolo", "京A12345", 0.9), res("cv", "川J111WE", 1.0)],
+            DEFAULT_ENGINE_WEIGHTS,
+            members=self.MEMBERS,
+            dropped=dropped,
+        )
+        # 两块车牌框相同（默认 bbox 一样）→ 同组；yolo 票权 0.9 > cv 0.6，胜出
+        assert [r.text for r in out] == ["京A12345"]
+        assert dropped == []
+
+
 # --------------------------------------------------------------------- 编排：并联
 
 

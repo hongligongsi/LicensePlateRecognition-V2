@@ -80,17 +80,6 @@ def parse_spec(raw: str) -> tuple[str, str]:
     return name.strip(), strat.strip()
 
 
-def _d1(a: str, b: str) -> bool:
-    """编辑距离是否 ≤1（仅用于近失诊断，不等价于识别正确）。"""
-    if a == b:
-        return True
-    if abs(len(a) - len(b)) > 1:
-        return False
-    if len(a) > len(b):
-        a, b = b, a
-    return any(b[:i] + b[i + 1 :] == a for i in range(len(b)))
-
-
 def _edit_distance(a: str, b: str) -> int:
     """标准编辑距离（车牌长度 ≤8，直接 DP 即可）。"""
     if not a:
@@ -104,6 +93,23 @@ def _edit_distance(a: str, b: str) -> int:
             cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
         prev = cur
     return prev[-1]
+
+
+def _d1(a: str, b: str) -> bool:
+    """编辑距离是否 ≤1（用于近失诊断与"误检"口径，不等价于识别正确）。
+
+    ⚠️ 这里曾经是个手写实现，只检查"删一位"，**漏掉了替换**：
+
+    ```python
+    return any(b[:i] + b[i + 1 :] == a for i in range(len(b)))   # 错
+    ```
+
+    ``b`` 删一位必然比 ``a`` 短一位，所以两个**等长**的串（即"形近字"最常见的
+    形态：``皖AH609A`` → ``皖AN609A``）永远返回 False。后果是系统性的：替换型
+    近失既没被算进"近失"，又被算成了"误检条目"。v2.8.2 前的误检数字因此偏高、
+    近失偏低。车牌最长 8 位，直接调 :func:`_edit_distance` 没有性能顾虑。
+    """
+    return _edit_distance(a, b) <= 1
 
 
 def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
