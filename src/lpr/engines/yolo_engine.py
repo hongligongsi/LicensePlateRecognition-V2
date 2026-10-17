@@ -987,9 +987,18 @@ class YoloEngine(BaseEngine):
 
         recognizer = self._get_recognizer()
         if recognizer is not None:
+            # 识别计划**按 ROI 来源分流**：这里的 ROI 是检测网络的透视矫正图，
+            # 对比结构就是车牌字符本身，因此可以用"同尺度换增强算子"的
+            # DETECT_PLAN（实测 CCPD 严格命中 85 → 89）。CV 定位器那条路给的
+            # ROI 偏松、含背景纹理，换增强会读出更多"错但合法"的号码，所以
+            # 那边仍用 LOCATE_PLAN —— 详见 deep_engine.RecognizePlan。
+            from .deep_engine import DETECT_PLAN
+
             regions = [(roi, PlateColor.UNKNOWN, bbox) for roi, bbox, _l, _s in prepared]
             results = recognizer.recognize_regions(
-                regions, layout_hint=[layout for _r, _b, layout, _s in prepared]
+                regions,
+                layout_hint=[layout for _r, _b, layout, _s in prepared],
+                plan=DETECT_PLAN,
             )
             # ``recognize_regions`` **会丢掉一个读数都没有的候选**（多尺度
             # 全轮无产出时它直接 ``continue``），所以返回列表通常比入参短。

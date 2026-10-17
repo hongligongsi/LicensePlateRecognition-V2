@@ -10,6 +10,8 @@ venv/
 
 # 测试与工具
 .pytest_cache/
+# --basetemp=.pytest-tmp 的产物（tmp_path fixture 的根目录，跑完可删，不该入库）
+.pytest-tmp*/
 .mypy_cache/
 .ruff_cache/
 .coverage

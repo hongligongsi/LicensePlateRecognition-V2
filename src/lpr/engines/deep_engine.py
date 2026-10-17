@@ -30,12 +30,18 @@ v2.0 把整张图丢给 RapidOCR，实测 2880x2304 的图耗时 **1.6 秒**；
 | v2.1 定位+纯识别 | **~120 ms** | 正确且快 |
 | v2.1 定位失败兜底 | 1600 ms | 极少触发 |
 
-## 多尺度投票
+## 多变体投票
 
-同一候选用不同超分倍数跑多次识别，按语法合法性加权投票；
-再把所有变体的**原始读数做逐列对齐融合**（ROVER 风格），
+同一候选按 :class:`RecognizePlan` 逐轮识别 —— 计划先在同一尺度下换**几种
+性质不同**的预处理（原图/锐化/CLAHE/直方图均衡/绿通道），再换尺度扫一遍；
+按语法合法性加权投票，并把所有变体的**原始读数做逐列对齐融合**（ROVER 风格），
 能补回被多数变体稳定丢掉的字符（如细笔画字母 E）。
-得益于单次识别仅 10~50ms，即便跑 3 个尺度也只要 100ms 级别。
+得益于单次识别仅 10~50ms，广度块几轮合计仍在 100ms 量级。
+
+**计划按 ROI 来源分流**（理由见 :class:`RecognizePlan` 上方那段）：检测网络给的
+ROI 用 :data:`DETECT_PLAN`（同尺度换假设），CV 定位器给的 ROI 用
+:data:`LOCATE_PLAN`（只换尺度）。默认值是后者，所以直接 ``DeepEngine()``
+的调用方拿到的仍是"deep 引擎的老行为"。
 """
 
 from __future__ import annotations
@@ -43,8 +49,9 @@ from __future__ import annotations
 import difflib
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import cv2
 import numpy as np
@@ -92,19 +99,146 @@ _PLATE_TEXT = re.compile(
 #: 纯字母数字（可能是号码的一部分）
 _BARE_TEXT = re.compile(r"^[A-Z0-9]{5,8}$")
 
-#: 超分倍数（按顺序尝试，命中即停）
-_UPSCALE_STEPS = (3.0, 2.0, 4.0)
-#: 锐化强度
-_SHARPEN_LEVELS = (0.0, 0.8)
+#: 识别计划：``(超分倍数, 预处理算子名)`` 的**有序**轮次表 + 早停阈值。
+#:
+#: 为什么不再用"尺度 × 锐化强度"两条轴的笛卡尔积（2026-10-16 改）：
+#:
+#: 旧计划 ``_UPSCALE_STEPS × _SHARPEN_LEVELS`` 的 6 轮**只换尺度**（放大 2/3/4 倍，
+#: 各配锐化开/关），换汤不换药 —— 对"噪声/低对比/强光把字形改了"的失败
+#: 无能为力：实测 CCPD 的 tilt 子集上这 6 轮**一致地**把 ``D`` 读成 ``0``、
+#: 把 ``Z`` 读成 ``2``，多跑几轮只是把同一个错读重复计票。
+#:
+#: 新计划在**同一尺度**下换成几种**性质不同**的预处理（锐化救模糊、CLAHE 救逆光、
+#: 绿通道救底色干扰、直方图均衡救整体偏暗）—— 它们对成像缺陷的敏感方向不一样，
+#: 因此**互相能提出不同假设**，某一种读出的合法号码才可能推翻另一种的错读。
+#: 其后才是"换尺度再扫一遍"的深度块，只在前面没能给出高把握领手时才跑到。
+#:
+#: **为什么有两套计划**（这是本轮实测最反直觉的一条）：
+#: 增强变体把"底色/背景的对比结构"一起放大了。ROI 来自检测网络时，那块对比
+#: 结构就是车牌字符，所以它提纯；ROI 来自形态学定位器时那块结构是背景纹理，
+#: 于是它读出更多"错但合法"的号码 —— 后者还会把 ``predict`` 的全图 OCR 兜底
+#: 挡在门外（实测 ``0324_034.jpg``：旧计划下定位阶段读不出 → 兜底读对；
+#: 新计划下定位阶段读出 ``皖AH067V``（GT ``皖AH061V``）→ 不再兜底 → 判负）。
+#: 因此按 **ROI 来源**分流，而不是全局一刀切：
+#:
+#: ==============  =============  ==============  ===============
+#: 计划            适用 ROI       CCPD 100 命中   中位耗时
+#: ==============  =============  ==============  ===============
+#: `LOCATE_PLAN`   CV 定位器      79/100          991 ms
+#: `DETECT_PLAN`   检测网络       85 → **89**     123 → 181 ms
+#: ==============  =============  ==============  ===============
+#:
+#: 两个计划的**特殊牌 10 张真值集都是不改动的**：`LOCATE_PLAN` 10/10（这条是 CI
+#: 的准确率门槛，`tests/test_real_samples_accuracy.py`）、`DETECT_PLAN` 8/10
+#: （与它换计划之前逐张相同）。这正是"按来源分流"没有把 `deep` 在特殊牌上的
+#: 强项换掉的原因。完整实验与负结果见 ``docs/ACCURACY.md`` §5.4。
+
+
+class RecognizePlan(NamedTuple):
+    """一套识别轮次计划：轮次表 + 早停阈值。
+
+    ``rounds`` 是 ``(超分倍数, 预处理算子名)`` 的有序表，算子名见 :data:`_PREP_OPS`；
+    ``min_stop`` 是"允许早停的最少轮数"，``max_weak`` 是"领手存在弱置信位时
+    允许跑到的最大轮数"。后两个不能从轮次表推出来 —— 旧计划（只换尺度）
+    需要的是"越早停越好"（2 轮），新计划需要的是"跑满假设集合"（广度块长度），
+    这是两种不同的证据观，所以显式写在计划里。
+    """
+
+    name: str
+    rounds: tuple[tuple[float, str], ...]
+    min_stop: int
+    max_weak: int
+    #: 这套计划给谁用（写进日志，便于事后归因"这次跑的是哪套"）
+    applies_to: str
+
+    def __len__(self) -> int:
+        return len(self.rounds)
+
+    @property
+    def breadth(self) -> int:
+        """**广度块长度** = 开头连续同一尺度的轮数。
+
+        从轮次表推导而不是另存一个字段：两处数字一旦不同步，"早停门槛"就会
+        悄悄变得和"假设集合"不匹配（要么提前停掉没出场过的算子，要么白等）。
+
+        两套计划都满足 ``min_stop == breadth``，但含义不同：
+
+        * :data:`DETECT_PLAN` 的广度块是 3 倍尺度 × 五种**性质各异**的预处理，
+          这是真正的"换假设"集合，砍短它实测会掉准确率（见该计划的说明）；
+        * :data:`LOCATE_PLAN` 的广度块是 3 倍尺度 × ``raw`` / ``sharpen``
+          两轮 —— 只求"跑过两种成像、拿到跨变体一致性证据"（旧计划的
+          ``_MIN_STOP_ROUNDS = 2`` 就是这个意思），**不**声称假设多样性。
+        """
+        first = self.rounds[0][0]
+        count = 0
+        for scale, _op in self.rounds:
+            if scale != first:
+                break
+            count += 1
+        return count
+
+
+#: CV 定位器 ROI 的计划：**只换尺度**（放大 2/3/4 倍 × 锐化开/关）。
+#:
+#: 保留旧行为是有实测依据的，不是"没来得及改"：定位器给的 ROI 偏松、
+#: 含背景，增强变体会把背景纹理一起提纯出"错但合法"的号码 —— 实测全局
+#: 换上 :data:`DETECT_PLAN` 会让 ``deep`` 的 CCPD 命中 79 → 78、中位耗时
+#: 991 → 1074 ms，还会连带把 ``fusion(ensemble)`` 的成员一致率打散
+#: （详见 ACCURACY §5.4）。
+LOCATE_PLAN = RecognizePlan(
+    name="locate",
+    rounds=(
+        (3.0, "raw"),
+        (3.0, "sharpen"),
+        (2.0, "raw"),
+        (2.0, "sharpen"),
+        (4.0, "raw"),
+        (4.0, "sharpen"),
+    ),
+    min_stop=2,
+    max_weak=4,
+    applies_to="CV 定位器给出的候选区（deep / cascade 引擎）",
+)
+
+#: 检测网络 ROI 的计划：**同尺度换假设**（广度块）+ **换尺度再扫**（深度块）。
+#:
+#: 广度块必须整体跑完才允许早停 —— 实测把 `min_stop` 从 5 降回 2（第 2 轮就停）
+#: 会让 yolo 的 CCPD 命中从 89 掉回 86：能推翻错读的 clahe / eq / gch 全排在
+#: 第 3 轮之后，早停等于把它们全部跳过。
+DETECT_PLAN = RecognizePlan(
+    name="detect",
+    rounds=(
+        # ---- 广度块：3 倍尺度 × 五种不同性质的预处理
+        (3.0, "raw"),
+        (3.0, "sharpen"),
+        (3.0, "clahe"),
+        (3.0, "eq"),
+        (3.0, "gch"),
+        # ---- 深度块：另两个尺度（广度块没能给出高把握领手时才跑）
+        (2.0, "raw"),
+        (2.0, "sharpen"),
+        (4.0, "raw"),
+        (4.0, "sharpen"),
+    ),
+    min_stop=5,  # = 广度块长度，见上
+    max_weak=9,  # = 整个计划长度：弱位本身就是"这个读数不可信"的信号
+    applies_to="检测网络给出的候选区（yolo 引擎）",
+)
+
+#: :class:`DeepEngine` 不显式传计划时的默认值。默认是定位器计划 ——
+#: 直接 ``DeepEngine()`` 的调用方拿到的就是"deep 引擎的老行为"，
+#: 与改动前逐张一致（回归基线测试就是靠这一点守住的）。
+_RECOGNIZE_PLAN = LOCATE_PLAN
 
 #: 主识别计划全部落空时的**补救预处理**（按顺序尝试，拿到合法读数即停）。
 #:
-#: 主计划的 6 轮只做「放大 + 锐化」—— 换的是**尺度**。它对噪声、低对比、
-#: 强光溢出的图无能为力：实测 CCPD 的 blur/fn 子集上模型给出的是"高置信度
-#: 地读错"（皖AUF027 → 皖ANF027，噪点把 U 咬成 N）或干脆空串，把同一张图
-#: 放大 2/3/4 倍再锐化一遍并不改变这件事。
-#: 补救计划换的是**预处理本身**：去噪、局部对比度均衡、二值化。
-#: 触发条件是「该候选一个合法读数都没抽出来」，因此对已命中的样本零影响。
+#: 计划换的都是"同一张图的成像方式"：:data:`LOCATE_PLAN` 只换**尺度**，对噪声、
+#: 低对比、强光溢出的图无能为力 —— 实测 CCPD 的 blur/fn 子集上模型给出的是
+#: "高置信度地读错"（皖AUF027 → 皖ANF027，噪点把 U 咬成 N 或干脆空串），
+#: 把同一张图放大 2/3/4 倍再锐化一遍并不改变这件事。
+#: 补救路径里有主计划没有的算子（``denoise`` 去噪、``otsu`` 大津二值化），
+#: 并且触发条件收窄到「该候选在主计划下一个合法读数都没抽出来」——
+#: 这本身已是"这张图整体不可读"的信号，因此对已命中的样本零影响。
 _RESCUE_VARIANTS: tuple[str, ...] = ("denoise", "clahe", "otsu")
 
 #: 补救变体统一使用的放大倍数。
@@ -121,13 +255,14 @@ _RESCUE_SCALE = 3.0
 #: "主候选差一点就读出来"的图上。取 2 次预算：拿到同样的识别收益，耗时只涨三成。
 _RESCUE_BUDGET = 2
 
-#: 早停前必须跑满的最少轮数。
-#: 单轮读数缺乏"跨变体一致性"证据——远距离黄牌实测第 1 轮读错、
-#: 第 3 轮（2.0x）才读对，第 1 轮就停等于放弃纠错机会。
-_MIN_STOP_ROUNDS = 2
-
-#: 领手存在弱置信位时继续收集证据的轮数上限（再差也认输，控制耗时）。
-_MAX_WEAK_ROUNDS = 4
+#: 早停阈值**不再**是模块级常量（v2.8.0 改）。
+#:
+#: 旧代码有 ``_MIN_STOP_ROUNDS`` / ``_MAX_WEAK_ROUNDS`` 两个全局量，因为当时
+#: 只有一套计划。改成两套计划后，同一个数字在两套计划下的含义完全不同：
+#: ``LOCATE_PLAN`` 取 2 / 4（只换尺度，越早停越省），``DETECT_PLAN`` 取
+#: 5 / 9（广度块必须整体跑完，否则 clahe / eq / gch 全被跳过 —— 实测会让
+#: yolo 的 CCPD 严格命中从 89 掉回 86）。因此阈值现在是
+#: :class:`RecognizePlan` 的字段，随计划一起传递，不再有"全局默认值"这一说。
 
 #: 融合阶段：插入列字符的采纳权重阈值（相对参考串分数的比例）。
 #: 低于它视为孤证噪声，不补进融合串。
@@ -656,10 +791,86 @@ def _sharpen(img: np.ndarray, amount: float) -> np.ndarray:
     return cv2.addWeighted(img, 1 + amount, blurred, -amount, 0)
 
 
+def _to_bgr(gray: np.ndarray) -> np.ndarray:
+    """单通道图 → 三通道（识别后端一律吃三通道，不给自己开分支）。"""
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def _op_raw(roi: np.ndarray) -> np.ndarray:
+    """原样：唯一一个"不引入任何假设"的变体，作为投票基准。"""
+    return roi
+
+
+def _op_sharpen(roi: np.ndarray) -> np.ndarray:
+    """USM 锐化：救运动模糊/失焦，代价是把噪点也一起抬起来。"""
+    return _sharpen(roi, 0.8)
+
+
+def _op_clahe(roi: np.ndarray) -> np.ndarray:
+    """灰度 CLAHE：救逆光、反光、大光比下"笔画与底色分不开"。
+
+    与补救预处理里的 LAB-CLAHE 不同，这里刻意走灰度：识别网络的输入本来
+    就要缩到 48px 高，彩色信息在这一步的收益抵不上三通道各自均衡后的
+    色偏；实测灰度版在 tilt/fn 子集上比 LAB 版多命中。
+    """
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    return _to_bgr(cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray))
+
+
+def _op_eq(roi: np.ndarray) -> np.ndarray:
+    """全局直方图均衡：与 CLAHE 互补 —— 全局版对整块偏暗/偏亮有效，
+    局部版对局部过曝有效，两者的失败场景并不重合。"""
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    return _to_bgr(cv2.equalizeHist(gray))
+
+
+def _op_gch(roi: np.ndarray) -> np.ndarray:
+    """绿通道单独成像。
+
+    中国车牌的蓝底/黄底在 BGR 里恰好都把**绿通道**留作对比度最高的那一路
+    （蓝底白字：蓝通道饱和、绿通道仍保留字形；黄底黑字同理）。它是"换成像
+    通道"而不是"换尺度"，对"底色的强反射把某个字压掉"这类失败尤其有效 ——
+    实测能读出其它所有变体都读丢的首位省份。
+    """
+    if roi.ndim != 3:
+        return _to_bgr(roi)
+    return _to_bgr(roi[:, :, 1])
+
+
+#: 预处理算子表。键是 :data:`LOCATE_PLAN` / :data:`DETECT_PLAN` 轮次表里用的名字。
+#:
+#: 表里**只有计划真的在用的算子**。实验期还试过 `close`（形态学闭运算，
+#: 补断裂笔画）—— 它在 CCPD 上与不用时**同为 89 张**，却让双层黄牌样张
+#: ``京EA5331`` 丢掉末位字符（膨胀把两行拼接处的窄字符吃掉了），因此被删掉，
+#: 不留"读起来有用、实际没收益"的死代码。
+_PREP_OPS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "raw": _op_raw,
+    "sharpen": _op_sharpen,
+    "clahe": _op_clahe,
+    "eq": _op_eq,
+    "gch": _op_gch,
+}
+
+
+def _apply_prep(roi: np.ndarray, factor: float, op: str) -> np.ndarray:
+    """按计划里的一轮，把 ROI 变成"同一个车牌、另一种成像"的图。
+
+    Args:
+        roi: 候选车牌区域（BGR，可选灰度）。
+        factor: 传给 :func:`_upscale` 的超分档位。
+        op: :data:`_PREP_OPS` 里的算子名。
+
+    Raises:
+        KeyError: ``op`` 不在算子表里 —— 这是**计划表写错字**，属于编码错误，
+            不静默降级（静默降级会让"计划里明明写了 clahe"变成没人发现的事）。
+    """
+    return _PREP_OPS[op](_upscale(roi, factor))
+
+
 def _rescue_preprocess(roi: np.ndarray, variant: str) -> np.ndarray | None:
     """补救预处理：换的是"怎么增强"，而不是"放大多少"。
 
-    只在主计划的 6 轮一个合法读数都没抽出来时才会被调用，见
+    只在主计划一个合法读数都没抽出来时才会被调用，见
     :data:`_RESCUE_VARIANTS` 里对动机的说明。
 
     Args:
@@ -1086,10 +1297,11 @@ class DeepEngine(BaseEngine):
         regions: list[tuple[np.ndarray, PlateColor, tuple]],
         *,
         layout_hint: list[PlateLayout] | None = None,
+        plan: RecognizePlan | None = None,
     ) -> list[PlateResult]:
-        """对**外部给定的**车牌区域做识别（多尺度投票 + 语法纠错 + 红字尾补）。
+        """对**外部给定的**车牌区域做识别（多变体投票 + 语法纠错 + 红字尾补）。
 
-        存在的理由：车牌识别里真正难的部分（多尺度投票、ROVER 逐列融合、
+        存在的理由：车牌识别里真正难的部分（多变体投票、ROVER 逐列融合、
         语法纠错、警/领红字尾定向识别）都在这条管线里。``yolo`` 引擎负责
         **定位**（检测网络给角点），把矫正好的区域交给这里识别 ——
         比在那边再抄一份识别逻辑可靠：抄出来的那份一定会随两边改动而漂移。
@@ -1100,28 +1312,37 @@ class DeepEngine(BaseEngine):
             layout_hint: 与 ``regions`` 等长的版式提示。外部检测器往往
                 **本来就知道**是单层还是双层，此时不必再靠行投影去猜；
                 传 ``UNKNOWN`` 的位置仍回落到 :func:`measure_layout`。
+            plan: 用哪套识别计划。``None``（默认）取 :data:`_RECOGNIZE_PLAN`
+                = :data:`LOCATE_PLAN`，即"deep 引擎的老行为"。
+                **来自检测网络的 ROI 必须传** :data:`DETECT_PLAN` —— 那块
+                ROI 的对比结构是车牌字符而不是背景纹理，增强算子在那里
+                才提纯（实测 yolo 的 CCPD 严格命中 85 → 89）。
 
         Returns:
             识别结果列表；本方法不做跨区域去重，由调用方决定。
         """
         self.ensure_ready()
-        return self._recognize_candidates(regions, layout_hints=layout_hint)
+        return self._recognize_candidates(regions, layout_hints=layout_hint, plan=plan)
 
     def _recognize_candidates(
         self,
         candidates: list[tuple[np.ndarray, PlateColor, tuple]],
         *,
         layout_hints: list[PlateLayout] | None = None,
+        plan: RecognizePlan | None = None,
     ) -> list[PlateResult]:
-        """对每个候选做多尺度识别 + 投票。
+        """对每个候选按 ``plan`` 逐轮识别 + 投票。
 
-        单次识别仅 10~50ms，因此可以负担多个尺度；
-        但仍在首个尺度就得到合法号码时立即停止（早停），
-        实测典型场景每个候选只跑 1~2 次。
+        计划分"广度块"（同尺度、几种不同性质的预处理）与"深度块"（换尺度再扫），
+        早停阈值（``min_stop`` / ``max_weak``）随计划一起给，见
+        :class:`RecognizePlan`。单次识别仅 10~50ms；实测典型场景在
+        广度块结束时收敛（早停），不跑深度块。
 
+        ``plan`` 为 ``None`` 时取 :data:`_RECOGNIZE_PLAN`（= :data:`LOCATE_PLAN`）。
         ``layout_hints`` 非空时按位置取用；为 ``None`` 或该位是
         ``UNKNOWN`` 时回落到 :func:`measure_layout` 的行投影判定。
         """
+        active = _RECOGNIZE_PLAN if plan is None else plan
         results: list[PlateResult] = []
         #: 本张图剩余的补救次数，见 :data:`_RESCUE_BUDGET`
         rescue_budget = _RESCUE_BUDGET
@@ -1133,7 +1354,6 @@ class DeepEngine(BaseEngine):
             #: 各变体的**原始** OCR 读数（清洗后、未抽取），供逐列融合使用
             raw_reads: list[tuple[str, float]] = []
             rounds = 0
-            plan = [(up, sh) for up in _UPSCALE_STEPS for sh in _SHARPEN_LEVELS]
             # 双行牌展开形态。
             # 借鉴参考实现 YOLO26-plate 的思路：**先在检测/定位阶段判定
             # 单层还是双层**，而不是对每个候选无脑尝试拆分。
@@ -1150,10 +1370,10 @@ class DeepEngine(BaseEngine):
             )
             variants = _to_single_line(roi) if layout is PlateLayout.DOUBLE else [roi]
 
-            for up, sharp in plan:
+            for up, op in active.rounds:
                 rounds += 1
                 for variant in variants:
-                    prepared = _sharpen(_upscale(variant, up), sharp)
+                    prepared = _apply_prep(variant, up, op)
 
                     for text, score, char_probs in self._recognize_only_detailed(prepared):
                         cleaned = _clean_text(text)
@@ -1176,23 +1396,30 @@ class DeepEngine(BaseEngine):
                     leader = max(votes, key=lambda k: votes[k])
                     share = votes[leader] / (sum(votes.values()) or 1.0)
                     # 早停三道闸门（全部满足才停）：
-                    #   1. 至少 _MIN_STOP_ROUNDS 轮 —— 单轮读数没有跨变体一致性；
+                    #   1. 跑满**广度块**（active.min_stop）—— 广度块是"提出不同
+                    #      假设"的最小集合，少跑一轮就有假设没机会出场；
                     #   2. 领手是 7/8 位合法车牌 —— 6 位"短牌"读数常是丢字后被
                     #      纠错规则"修"出来的假合法串（实测 京E51619→京S1619），
                     #      必须跑满计划给正确读数出场机会；
                     #   3. 票份过半。领手存在弱置信位时继续收集证据（封顶限轮）。
                     if (
-                        rounds >= _MIN_STOP_ROUNDS
+                        rounds >= active.min_stop
                         and len(leader) in (7, 8)
                         and is_valid(leader)
                         and share >= 0.5
                     ):
                         probs = char_probs_by_text.get(leader) or []
-                        if not _weak_positions(probs) or rounds >= _MAX_WEAK_ROUNDS:
-                            logger.debug("候选收敛于 %s（%d/%d 轮）", leader, rounds, len(plan))
+                        if not _weak_positions(probs) or rounds >= active.max_weak:
+                            logger.debug(
+                                "候选收敛于 %s（%d/%d 轮，%s 计划）",
+                                leader,
+                                rounds,
+                                len(active),
+                                active.name,
+                            )
                             break
 
-            # ---- 补救预处理：主计划 6 轮全落空时，换一组"增强"重试。
+            # ---- 补救预处理：主计划全部落空时，换一组"增强"重试。
             # 与下面的第二模型交叉验证是两条**独立**的补救路径 ——
             # 这里换图像，那里换模型；两者可叠加（先换图像，仍无产出再换模型）。
             rescue_used = False
@@ -1233,9 +1460,9 @@ class DeepEngine(BaseEngine):
             secondary_used = False
             if not votes and self._recognizer2 is not None:
                 weight = float(np.clip(self.config.secondary_vote_weight, 0.0, 1.0))
-                for up, sharp in plan:
+                for up, op in active.rounds:
                     for variant in variants:
-                        prepared = _sharpen(_upscale(variant, up), sharp)
+                        prepared = _apply_prep(variant, up, op)
                         for text, score, char_probs in self._recognize2_detailed(prepared):
                             cleaned = _clean_text(text)
                             if not cleaned:

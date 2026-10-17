@@ -791,8 +791,11 @@ class _FakeRecognizer:
         self.text_for_bbox = text_for_bbox or {}
         self.drop_bboxes = set(drop_bboxes)
         self.seen: list[object] = []
+        #: 调用方传进来的识别计划（用于断言"yolo 走的是 DETECT_PLAN"）
+        self.seen_plans: list[object] = []
 
-    def recognize_regions(self, regions, *, layout_hint=None):
+    def recognize_regions(self, regions, *, layout_hint=None, plan=None):
+        self.seen_plans.append(plan)
         results = []
         for i, (_roi, _color, bbox) in enumerate(regions):
             self.seen.append(bbox)
@@ -911,3 +914,23 @@ class TestReusedRecognizerAlignment:
         for r in results:
             assert r.engine == "yolo"
         assert any(r.meta.get("recognizer") for r in results)
+
+    def test_reused_recognizer_gets_the_detect_plan(self, stub_factory, tmp_path):
+        """yolo 复用识别管线时必须显式要 :data:`DETECT_PLAN`。
+
+        检测网络的 ROI 与 CV 定位器的 ROI 对增强算子的反应**方向相反**
+        （前者的对比结构是字符 → 提纯；后者的对比结构是背景纹理 → 读出更多
+        "错但合法"的号码）。所以这条不是"顺手传个参数"，而是准确率本身：
+        实测 yolo 的 CCPD 严格命中 85 → 89 就靠它。默认值是 ``LOCATE_PLAN``，
+        哪次改动把这个参数删掉，这条断言会立刻红。
+        """
+        from lpr.engines.deep_engine import DETECT_PLAN
+
+        fake = _FakeRecognizer()
+        engine = self._engine(stub_factory, tmp_path, fake)
+        dets = self._two_detections(engine)
+        engine._recognize_all(np.full((480, 800, 3), 128, np.uint8), dets)
+        assert fake.seen_plans, "识别后端根本没被调用"
+        assert all(p is DETECT_PLAN for p in fake.seen_plans), (
+            f"yolo 应要求 DETECT_PLAN，实际拿到 {[getattr(p, 'name', p) for p in fake.seen_plans]}"
+        )
