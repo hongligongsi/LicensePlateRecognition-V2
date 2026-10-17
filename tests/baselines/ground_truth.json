@@ -1,5 +1,5 @@
 {
-  "_note": "真实样张人工真值标注，由 tests/test_real_samples_accuracy.py 消费，构成准确率 CI 门槛。规则：除 known_failure 外每张样张的真值车牌必须全部命中，且底色必须与 color 一致。识别效果提升让 known_failure 命中后，应把它改成常规样本；新增样张时同步补标注。color 取值 = PlateColor 枚举值（black/blue/green/white/yellow/hazmat）。",
+  "_note": "真实样张人工真值标注，由 tests/test_real_samples_accuracy.py 消费，构成准确率 CI 门槛。规则：除 known_failure 外每张样张的真值车牌必须全部命中，且底色必须与 color 一致。识别效果提升让 known_failure 命中后，应把它改成常规样本；新增样张时同步补标注。color 取值 = PlateColor 枚举值（black/blue/green/white/yellow/hazmat）。 2026-10-17 扩容：img/ 里 32 张无标注真实照片逐张人工标注并经 deep 引擎逐文件实测后入库，22 张进常规门槛、10 张进 known_failure（近失/漏检/颜色判据失手，见各自 _note）。教训：一次消息里批量读多图时返回图与文件名可能错配，标注必须以逐文件引擎读数/单独复核为准。",
   "_threshold": 0.9,
   "samples": [
     {
@@ -81,6 +81,250 @@
         "京AD77972"
       ],
       "color": "green"
+    },
+    {
+      "path": "img/2eb6183db4db2e20d950269b8554332a.jpg",
+      "plates": [
+        "吉AF11666"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/a2cc7cd98d1001e9cee36e46658023fe55e79739.webp",
+      "plates": [
+        "云K3D135"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/a78f46c6fcbefade9e4964e844ff2c9a.jpeg",
+      "plates": [
+        "川Q55555"
+      ],
+      "color": "yellow"
+    },
+    {
+      "path": "img/a82bce4750af892f1f73aef513799b63.jpg",
+      "plates": [
+        "川AF14888"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/a9cb45bd8173d179e2aac3ea571856a2.jpeg",
+      "plates": [
+        "冀ED17219"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/b1488175fdd99d53c96f41f634006aa2.jpeg",
+      "plates": [
+        "浙G00001"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/b4838314daf2887559f7614274a8c794.jpg",
+      "plates": [
+        "冀A99999"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/b988b8fe035fb60623edc72648298228.png",
+      "plates": [
+        "冀T15888"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/bf9aea0d884054ca3adca0881174ae02.jpg",
+      "plates": [
+        "云A02009"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/cc22417dddc40c7347ea89b407ebf8ac.jpeg",
+      "plates": [
+        "鲁EH8915"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/cca8a0b2660173b7376bfecb7dbf748a.jpeg",
+      "plates": [
+        "贵D9H871"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/d77197a643357f797ceeade99d5452e8.jpeg",
+      "plates": [
+        "青HP3996"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/d8ab99216bbaebe23260be6e24f5cdc4.jpeg",
+      "plates": [
+        "晋BTS238"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/d90f2fe01edc596fd120021c24374a8a.jpeg",
+      "plates": [
+        "皖FD03163"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/d9888d1e09065d8aad262831a0a896a7.jpeg",
+      "plates": [
+        "贵AF515F"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/db43474a850afa3b661f9f17494c093d.jpeg",
+      "plates": [
+        "陕KSB250"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/e114c28d05f0e07c66a845c539f001fb.jpeg",
+      "plates": [
+        "京BD01113"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/e2685876504a2e4ec2fdca160274c7a5.jpeg",
+      "plates": [
+        "冀XD52093"
+      ],
+      "color": "green"
+    },
+    {
+      "path": "img/eeed0bbfc738f3e6eeb237b8ab492d90.jpg",
+      "plates": [
+        "苏L110B2"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/f6ae4830653092de6574cf714c11126a.jpeg",
+      "plates": [
+        "湘M1C212"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/u=1394557350,2472333013&fm=253&fmt=auto&app=120&f=JPEG.webp",
+      "plates": [
+        "湘UML000"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/u=390953787,3147953245&fm=253&fmt=auto&app=138&f=JPEG.webp",
+      "plates": [
+        "苏JAY888"
+      ],
+      "color": "blue"
+    },
+    {
+      "path": "img/a7a86812534a5d9820cd6d5da092680d.jpg",
+      "plates": [
+        "苏FDG0391"
+      ],
+      "color": "green",
+      "known_failure": true,
+      "_note": "近失：读成 苏FDGU391（0↔U 形近字），deep 当前极限"
+    },
+    {
+      "path": "img/a9add306578e0e3f5650df352fa4fced.jpeg",
+      "plates": [
+        "浙A7L039"
+      ],
+      "color": "yellow",
+      "known_failure": true,
+      "_note": "大图（1500×1125）里客车小牌，deep 全部漏检"
+    },
+    {
+      "path": "img/cad82feb5f88ca12a96c11594d9c7699.jpeg",
+      "plates": [
+        "宁AD33633"
+      ],
+      "color": "green",
+      "known_failure": true,
+      "_note": "漏省份字：只读出 AD33633"
+    },
+    {
+      "path": "img/dbb4c7c9b8770190d6fccf3936e13aa8.png",
+      "plates": [
+        "鲁L06991D"
+      ],
+      "color": "yellow",
+      "known_failure": true,
+      "_note": "号码命中但底色判成 green——客车车身喷绘的同号大字干扰颜色判据"
+    },
+    {
+      "path": "img/de72db7c0e53e5f395e281f2e833965b.jpeg",
+      "plates": [
+        "赣BG88888"
+      ],
+      "color": "blue",
+      "known_failure": true,
+      "_note": "近失：读成 赣BG8888（丢末位）"
+    },
+    {
+      "path": "img/e6e2ecab29bb76091000134e9b688e6c.jpeg",
+      "plates": [
+        "豫RD19999"
+      ],
+      "color": "green",
+      "known_failure": true,
+      "_note": "近失：读成 豫RD1999 / 豫U19999"
+    },
+    {
+      "path": "img/ef55d67fd01616bafe1d540500b512a2.jpg",
+      "plates": [
+        "浙B08520D"
+      ],
+      "color": "green",
+      "known_failure": true,
+      "_note": "号码命中但底色判成 hazmat——渐变绿 taxi 牌颜色判据失手"
+    },
+    {
+      "path": "img/ff516acb97be7f0b575ce8347bb382ad.jpeg",
+      "plates": [
+        "冀T16888"
+      ],
+      "color": "blue",
+      "known_failure": true,
+      "_note": "近失：读成 WT16888（冀→WT）"
+    },
+    {
+      "path": "img/f13ec9839cb707682f806ec39906220f.jpeg",
+      "plates": [
+        "云A555TX"
+      ],
+      "color": "blue",
+      "known_failure": true,
+      "_note": "错读：皖A5551X（云→皖、T→1，差 2 字符）"
+    },
+    {
+      "path": "img/u=1842691166,1482225271&fm=253&fmt=auto&app=138&f=JPEG.webp",
+      "plates": [
+        "辽B5E62J"
+      ],
+      "color": "blue",
+      "known_failure": true,
+      "_note": "小牌斜拍，deep 全部漏检"
     }
   ]
 }

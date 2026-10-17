@@ -41,7 +41,7 @@
 | 集 | 张数 | 来源 | 特点 |
 |---|---|---|---|
 | **CCPD 标注集** | 100 | `datasets/ccpd_labeled/`，720×1160 原始分辨率 | 常规牌为主（base 67），含 weather/blur/tilt/challenge/fn/db/rotate 各 1~8 张 |
-| **自有样张** | 10（有效） | `tests/baselines/ground_truth.json`（人工真值，CI 门槛在用） | 特殊牌为主：双层、黄色、港/警/领/学 尾字 |
+| **自有样张** | 32（有效，另有 10 张 known_failure） | `tests/baselines/ground_truth.json`（人工真值，CI 门槛在用） | 特殊牌（双层、黄色、港/警/领/学 尾字）+ 2026-10-17 扩容的 32 张实拍照片（蓝/绿/黄混合，多省牌照、webp/哈希名） |
 
 CCPD 的文本真值来自 `_labels.json`（经 OpenDataLab DSDL 标注交叉验证）；
 定位真值取自文件名里的 bbox 段，与 yolo 检测框的 IoU 实测 0.83~0.92，可用。
